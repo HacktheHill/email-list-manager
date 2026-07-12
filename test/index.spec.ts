@@ -22,10 +22,10 @@ beforeEach(async () => {
 	await env.DB.prepare("DELETE FROM subscribers").run();
 });
 
-describe("newsletter subscription service", () => {
+describe("email list subscription service", () => {
 	it("does not mutate state when a browser opens an unsubscribe link", async () => {
 		const token = await createUnsubscribeToken("scanner@example.com");
-		const response = await SELF.fetch(`https://newsletter.hackthehill.com/unsubscribe?token=${token}`, {
+		const response = await SELF.fetch(`https://email-list-manager.hackthehill.com/unsubscribe?token=${token}`, {
 			headers: { Accept: "text/html" },
 		});
 
@@ -39,7 +39,7 @@ describe("newsletter subscription service", () => {
 
 	it("suppresses an address on one-click POST and is idempotent", async () => {
 		const token = await createUnsubscribeToken("person@example.com");
-		const request = () => SELF.fetch(`https://newsletter.hackthehill.com/unsubscribe?token=${token}`, { method: "POST" });
+		const request = () => SELF.fetch(`https://email-list-manager.hackthehill.com/unsubscribe?token=${token}`, { method: "POST" });
 
 		expect((await request()).status).toBe(200);
 		expect((await request()).status).toBe(200);
@@ -53,7 +53,7 @@ describe("newsletter subscription service", () => {
 	it("accepts the browser confirmation form token in the POST body", async () => {
 		const token = await createUnsubscribeToken("form@example.com");
 		const form = new URLSearchParams({ token });
-		const response = await SELF.fetch("https://newsletter.hackthehill.com/unsubscribe", {
+		const response = await SELF.fetch("https://email-list-manager.hackthehill.com/unsubscribe", {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "text/html" },
 			body: form,
@@ -72,10 +72,10 @@ describe("newsletter subscription service", () => {
 		await seedSubscriber("pending@example.com", "pending");
 		await seedSubscriber("unsubscribed@example.com", "unsubscribed");
 
-		const unauthorized = await SELF.fetch("https://newsletter.hackthehill.com/subscribe?export=csv");
+		const unauthorized = await SELF.fetch("https://email-list-manager.hackthehill.com/subscribe?export=csv");
 		expect(unauthorized.status).toBe(401);
 
-		const response = await SELF.fetch("https://newsletter.hackthehill.com/subscribe?export=csv", {
+		const response = await SELF.fetch("https://email-list-manager.hackthehill.com/subscribe?export=csv", {
 			headers: { Authorization: "Bearer export-token" },
 		});
 		expect(response.status).toBe(200);
@@ -87,7 +87,7 @@ describe("newsletter subscription service", () => {
 		const tokenHash = await sha256Hex(token);
 		await seedPending("confirm@example.com", tokenHash);
 
-		const getResponse = await SELF.fetch(`https://newsletter.hackthehill.com/subscribe?token=${token}`, {
+		const getResponse = await SELF.fetch(`https://email-list-manager.hackthehill.com/subscribe?token=${token}`, {
 			headers: { Accept: "text/html" },
 		});
 		expect(getResponse.status).toBe(200);
@@ -96,7 +96,7 @@ describe("newsletter subscription service", () => {
 			.first<{ status: string }>();
 		expect(row?.status).toBe("pending");
 
-		const postResponse = await SELF.fetch(`https://newsletter.hackthehill.com/subscribe?token=${token}`, {
+		const postResponse = await SELF.fetch(`https://email-list-manager.hackthehill.com/subscribe?token=${token}`, {
 			method: "POST",
 			headers: { Accept: "application/json" },
 		});
@@ -110,7 +110,7 @@ describe("newsletter subscription service", () => {
 	it("supports the existing sender's suppressed-list pagination endpoint", async () => {
 		await seedSubscriber("a@example.com", "unsubscribed");
 		await seedSubscriber("b@example.com", "unsubscribed");
-		const response = await SELF.fetch("https://newsletter.hackthehill.com/unsubscribe?suppressed=1&limit=1", {
+		const response = await SELF.fetch("https://email-list-manager.hackthehill.com/unsubscribe?suppressed=1&limit=1", {
 			headers: { Authorization: "Bearer suppression-token" },
 		});
 		expect(response.status).toBe(200);

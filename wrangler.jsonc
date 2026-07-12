@@ -1,20 +1,20 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "hack-the-hill-newsletter",
+	"name": "email-list-manager",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-07-11",
 	"compatibility_flags": ["global_fetch_strictly_public"],
 	"routes": [
 		{
-			"pattern": "newsletter.hackthehill.com/*",
+			"pattern": "email-list-manager.hackthehill.com/*",
 			"zone_name": "hackthehill.com"
 		}
 	],
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "hack-the-hill-newsletter",
-			"database_id": "2b4a4071-c6c0-4628-b226-183f41b1e6e7",
+			"database_name": "email-list-manager",
+			"database_id": "4daf12d1-0eae-4454-8f38-b80bdf8dbfab",
 			"migrations_dir": "migrations"
 		}
 	],
@@ -22,8 +22,8 @@
 		"enabled": true
 	},
 	"vars": {
-		"PUBLIC_BASE_URL": "https://newsletter.hackthehill.com",
-		"CONSENT_TEXT_VERSION": "newsletter-consent-v1",
+		"PUBLIC_BASE_URL": "https://email-list-manager.hackthehill.com",
+		"CONSENT_TEXT_VERSION": "email-list-v1",
 		"ALLOWED_ORIGINS": "https://hackthehill.com,https://www.hackthehill.com"
 	}
 }

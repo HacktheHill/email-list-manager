@@ -1,6 +1,6 @@
-# Hack the Hill newsletter service
+# Hack the Hill email list service
 
-This repository contains the standalone subscription service for the Hack the Hill newsletter. It is a Cloudflare Worker backed by D1. D1 is the source of truth; the CSV endpoint is an authenticated campaign snapshot for [`bulk-email`](https://github.com/HacktheHill/bulk-email).
+This repository contains the standalone subscription service for the Hack the Hill email list. It is a Cloudflare Worker backed by D1. D1 is the source of truth; the CSV endpoint is an authenticated campaign snapshot for [`bulk-email`](https://github.com/HacktheHill/bulk-email).
 
 ## Routes
 
@@ -9,8 +9,8 @@ All state changes use `POST`. Browser `GET` requests only render a small page, w
 ### Subscribe
 
 ```text
-GET  https://newsletter.hackthehill.com/subscribe
-POST https://newsletter.hackthehill.com/subscribe
+GET  https://email-list-manager.hackthehill.com/subscribe
+POST https://email-list-manager.hackthehill.com/subscribe
 ```
 
 The POST body can be JSON or form data:
@@ -30,8 +30,8 @@ To confirm a request, POST the token from the confirmation URL:
 ### Unsubscribe
 
 ```text
-GET  https://newsletter.hackthehill.com/unsubscribe?token=...
-POST https://newsletter.hackthehill.com/unsubscribe?token=...
+GET  https://email-list-manager.hackthehill.com/unsubscribe?token=...
+POST https://email-list-manager.hackthehill.com/unsubscribe?token=...
 ```
 
 `POST` also accepts the RFC 8058 `List-Unsubscribe=One-Click` request. The legacy `?t=` query parameter remains accepted for old messages.
@@ -44,7 +44,7 @@ POST https://newsletter.hackthehill.com/unsubscribe?token=...
 curl \
   -H "Authorization: Bearer $EXPORT_TOKEN" \
   -H 'Accept: text/csv' \
-  'https://newsletter.hackthehill.com/subscribe?export=csv'
+  'https://email-list-manager.hackthehill.com/subscribe?export=csv'
 ```
 
 The response contains only confirmed active addresses and is marked `no-store`.
@@ -64,10 +64,10 @@ The production Worker and D1 database are already deployed. The SES DNS records 
 2. Apply migrations after schema changes:
 
    ```bash
-   npx wrangler d1 migrations apply hack-the-hill-newsletter --remote
+   npx wrangler d1 migrations apply email-list-manager --remote
    ```
 
-3. Configure the `newsletter.hackthehill.com` custom domain/route.
+3. Configure the `email-list-manager.hackthehill.com` custom domain/route.
 4. Set Worker secrets. Never put these values in `wrangler.jsonc`:
 
    ```bash
@@ -82,7 +82,7 @@ The production Worker and D1 database are already deployed. The SES DNS records 
    npx wrangler secret put SES_CONFIGURATION_SET
    ```
 
- `AWS_ACCESS_KEY_ID` should belong to an IAM principal restricted to sending from the newsletter identity. Add `AWS_SESSION_TOKEN` only when using temporary credentials.
+ `AWS_ACCESS_KEY_ID` should belong to an IAM principal restricted to sending from the email list identity. Add `AWS_SESSION_TOKEN` only when using temporary credentials.
 
 5. Set `UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET` during signing-key rotation and remove it after all old messages have aged out.
 6. Configure Cloudflare rate limiting for subscription POSTs by source IP and enable Worker observability.
@@ -90,9 +90,9 @@ The production Worker and D1 database are already deployed. The SES DNS records 
 
 The deployed configuration uses `info@hackthehill.com` as the sender and `my-first-configuration-set` for SES. SES DKIM verification is still pending; sending will become usable as soon as AWS marks the identity verified.
 
-For the Cloudflare rate-limit rule, target hostname `newsletter.hackthehill.com`, path `/subscribe`, and method `POST`. The deployed Free-plan rule allows **10 requests per IP per 10 seconds** and blocks for 10 seconds (Cloudflare Free only permits a 10-second period/mitigation window). The Worker already enforces a 15-minute per-address confirmation resend cooldown. No KV namespace is required.
+For the Cloudflare rate-limit rule, target hostname `email-list-manager.hackthehill.com`, path `/subscribe`, and method `POST`. The deployed Free-plan rule allows **10 requests per IP per 10 seconds** and blocks for 10 seconds (Cloudflare Free only permits a 10-second period/mitigation window). The Worker already enforces a 15-minute per-address confirmation resend cooldown. No KV namespace is required.
 
-The only route in the Hack the Hill Cloudflare account is `newsletter.hackthehill.com/*` → `hack-the-hill-newsletter`; the retired vote-domain Worker and route are not used by this service.
+The only route in the Hack the Hill Cloudflare account is `email-list-manager.hackthehill.com/*` → `email-list-manager`; the retired vote-domain Worker and route are not used by this service.
 
 ## SES verification records for `hackthehill.com`
 

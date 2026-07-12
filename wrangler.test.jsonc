@@ -1,19 +1,19 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "hack-the-hill-newsletter-test",
+	"name": "email-list-manager-test",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-03-10",
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "hack-the-hill-newsletter-test",
-			"database_id": "newsletter-test",
+			"database_name": "email-list-manager-test",
+			"database_id": "email-list-test",
 			"migrations_dir": "migrations"
 		}
 	],
 	"vars": {
-		"PUBLIC_BASE_URL": "https://newsletter.hackthehill.com",
-		"CONSENT_TEXT_VERSION": "newsletter-consent-v1",
+		"PUBLIC_BASE_URL": "https://email-list-manager.hackthehill.com",
+		"CONSENT_TEXT_VERSION": "email-list-v1",
 		"ALLOWED_ORIGINS": "https://hackthehill.com",
 		"EXPORT_TOKEN": "export-token",
 		"SUPPRESSION_READ_TOKEN": "suppression-token",

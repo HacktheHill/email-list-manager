@@ -42,7 +42,7 @@ export default {
 
 			return await handleUnsubscribe(request, env, url);
 		} catch (error) {
-			console.error("newsletter request failed", error instanceof Error ? error.message : String(error));
+			console.error("email list request failed", error instanceof Error ? error.message : String(error));
 			return jsonResponse({ ok: false, error: "Service temporarily unavailable" }, 503, request, env);
 		}
 	},
@@ -293,7 +293,7 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 		status: 200,
 		headers: {
 			"Content-Type": "text/csv; charset=utf-8",
-			"Content-Disposition": `attachment; filename="hack-the-hill-newsletter-${new Date().toISOString().slice(0, 10)}.csv"`,
+			"Content-Disposition": `attachment; filename="email-list-manager-${new Date().toISOString().slice(0, 10)}.csv"`,
 			"Cache-Control": "no-store",
 		},
 	}, request, env);
@@ -335,8 +335,8 @@ async function sendConfirmationEmail(email: string, token: string, env: Env): Pr
 	const confirmationUrl = new URL("/subscribe", env.PUBLIC_BASE_URL);
 	confirmationUrl.searchParams.set("token", token);
 	const escapedUrl = escapeHtml(confirmationUrl.toString());
-	const html = `<p>Someone requested to subscribe <strong>${escapeHtml(email)}</strong> to the Hack the Hill newsletter.</p><p><a href="${escapedUrl}">Confirm subscription</a></p><p>This link expires in 24 hours. If you did not request this, you can ignore this email.</p>`;
-	const text = `Someone requested to subscribe ${email} to the Hack the Hill newsletter.\n\nConfirm subscription: ${confirmationUrl}\n\nThis link expires in 24 hours. If you did not request this, you can ignore this email.`;
+	const html = `<p>Someone requested to subscribe <strong>${escapeHtml(email)}</strong> to the Hack the Hill email list.</p><p><a href="${escapedUrl}">Confirm subscription</a></p><p>This link expires in 24 hours. If you did not request this, you can ignore this email.</p>`;
+	const text = `Someone requested to subscribe ${email} to the Hack the Hill email list.\n\nConfirm subscription: ${confirmationUrl}\n\nThis link expires in 24 hours. If you did not request this, you can ignore this email.`;
 	const from = env.SES_FROM_NAME ? `${env.SES_FROM_NAME} <${env.SES_FROM_EMAIL}>` : env.SES_FROM_EMAIL;
 	const client = new AwsClient({
 		accessKeyId: env.AWS_ACCESS_KEY_ID,
@@ -353,7 +353,7 @@ async function sendConfirmationEmail(email: string, token: string, env: Env): Pr
 			Destination: { ToAddresses: [email] },
 			Content: {
 				Simple: {
-					Subject: { Data: "Confirm your Hack the Hill newsletter subscription", Charset: "UTF-8" },
+					Subject: { Data: "Confirm your Hack the Hill email list subscription", Charset: "UTF-8" },
 					Body: {
 						Html: { Data: html, Charset: "UTF-8" },
 						Text: { Data: text, Charset: "UTF-8" },
@@ -536,19 +536,19 @@ function renderLayout(title: string, body: string): string {
 function renderSubscribePage(token: string | null): string {
 	if (token) {
 		return renderLayout(
-			"Confirm newsletter subscription",
-			`<p>Click the button below to confirm your Hack the Hill newsletter subscription.</p><form method="post" action="/subscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Confirm subscription</button></form>`,
+			"Confirm email list subscription",
+			`<p>Click the button below to confirm your Hack the Hill email list subscription.</p><form method="post" action="/subscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Confirm subscription</button></form>`,
 		);
 	}
 
 	return renderLayout(
-		"Hack the Hill newsletter",
-		`<form method="post" action="/subscribe"><label for="email">Email address</label><input id="email" name="email" type="email" autocomplete="email" required maxlength="254"><p>Hack the Hill will use this address to send newsletter updates. You can unsubscribe at any time.</p><label><input name="consent" type="checkbox" value="yes" required>I agree to receive the Hack the Hill newsletter.</label><p>We will send a confirmation email before adding you to the newsletter.</p><button type="submit">Subscribe</button></form>`,
+		"Hack the Hill email list",
+		`<form method="post" action="/subscribe"><label for="email">Email address</label><input id="email" name="email" type="email" autocomplete="email" required maxlength="254"><p>Hack the Hill will use this address to send email list updates. You can unsubscribe at any time.</p><label><input name="consent" type="checkbox" value="yes" required>I agree to receive the Hack the Hill email list.</label><p>We will send a confirmation email before adding you to the email list.</p><button type="submit">Subscribe</button></form>`,
 	);
 }
 
 function renderConfirmationResult(): string {
-	return renderLayout("Subscription confirmed", "<p>You are now subscribed to the Hack the Hill newsletter.</p>");
+	return renderLayout("Subscription confirmed", "<p>You are now subscribed to the Hack the Hill email list.</p>");
 }
 
 function renderUnsubscribePage(valid: boolean, token = ""): string {
@@ -557,8 +557,8 @@ function renderUnsubscribePage(valid: boolean, token = ""): string {
 	}
 
 	return renderLayout(
-		"Unsubscribe from the newsletter",
-		`<p>Click the button below to stop receiving future Hack the Hill newsletter emails.</p><form method="post" action="/unsubscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Unsubscribe</button></form><p>Your email client may submit this request automatically through its one-click unsubscribe feature.</p>`,
+		"Unsubscribe from the email list",
+		`<p>Click the button below to stop receiving future Hack the Hill email list emails.</p><form method="post" action="/unsubscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Unsubscribe</button></form><p>Your email client may submit this request automatically through its one-click unsubscribe feature.</p>`,
 	);
 }
 
@@ -572,7 +572,7 @@ function acceptedSubscriptionResponse(request: Request, env: Env): Response {
 
 function unsubscribeResponse(request: Request, env: Env): Response {
 	if (wantsHtml(request)) {
-		return htmlResponse(renderLayout("Unsubscribed", "<p>You have been unsubscribed from future Hack the Hill newsletter emails.</p>"), 200, request, env);
+		return htmlResponse(renderLayout("Unsubscribed", "<p>You have been unsubscribed from future Hack the Hill email list emails.</p>"), 200, request, env);
 	}
 
 	return textResponse("ok", 200, request, env);
