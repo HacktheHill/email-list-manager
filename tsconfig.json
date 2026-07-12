@@ -6,7 +6,7 @@
 		"lib": ["ES2022"],
 		"strict": true,
 		"skipLibCheck": true,
-		"types": ["@cloudflare/vitest-pool-workers", "vitest/globals"]
+		"types": ["@cloudflare/vitest-pool-workers/types", "vitest/globals"]
 	},
 	"include": ["src/**/*.ts", "test/**/*.ts", "worker-configuration.d.ts"]
 }
