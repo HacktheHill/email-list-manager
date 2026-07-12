@@ -15,9 +15,9 @@
 		"aws4fetch": "^1.0.20"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.12.20",
+		"@cloudflare/vitest-pool-workers": "^0.18.4",
 		"typescript": "^5.5.2",
-		"vitest": "^3.2.7",
+		"vitest": "^4.1.10",
 		"wrangler": "^4.71.0"
 	}
 }
