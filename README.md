@@ -88,6 +88,8 @@ The production Worker and D1 database are already deployed. The SES DNS records 
 6. Configure Cloudflare rate limiting for subscription POSTs by source IP and enable Worker observability.
 7. Configure AWS SES account-level suppression for both hard bounces and complaints, plus a configuration set with delivery/bounce/complaint event destinations.
 
+CloudWatch alarms are configured for the SES configuration set: `email-list-manager-ses-bounce-rate` alerts at a 5% daily bounce rate, and `email-list-manager-ses-complaint-rate` alerts at a 0.1% daily complaint rate. Both target the `email-list-manager-ses-alerts` SNS topic. Its `info@hackthehill.com` email subscription must be confirmed from the AWS confirmation message before notifications can be delivered.
+
 The deployed configuration uses `info@hackthehill.com` as the sender and `my-first-configuration-set` for SES. SES DKIM, domain, and custom MAIL FROM verification are complete.
 
 For the Cloudflare rate-limit rule, target hostname `emails.hackthehill.com`, path `/subscribe`, and method `POST`. The deployed Free-plan rule allows **10 requests per IP per 10 seconds** and blocks for 10 seconds (Cloudflare Free only permits a 10-second period/mitigation window). The Worker already enforces a 15-minute per-address confirmation resend cooldown. No KV namespace is required.
