@@ -8,14 +8,6 @@
 		{
 			"pattern": "emails.hackthehill.com/*",
 			"zone_name": "hackthehill.com"
-		},
-		{
-			"pattern": "hackthehill.com/subscribe*",
-			"zone_name": "hackthehill.com"
-		},
-		{
-			"pattern": "hackthehill.com/unsubscribe*",
-			"zone_name": "hackthehill.com"
 		}
 	],
 	"d1_databases": [

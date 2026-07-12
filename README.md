@@ -34,8 +34,6 @@ GET  https://emails.hackthehill.com/unsubscribe?token=...
 POST https://emails.hackthehill.com/unsubscribe?token=...
 ```
 
-The root-domain convenience URLs `https://hackthehill.com/subscribe` and `https://hackthehill.com/unsubscribe` permanently redirect to these canonical endpoints.
-
 `POST` also accepts the RFC 8058 `List-Unsubscribe=One-Click` request. The legacy `?t=` query parameter remains accepted for old messages.
 
 ### Authenticated CSV export
@@ -94,7 +92,7 @@ The deployed configuration uses `info@hackthehill.com` as the sender and `my-fir
 
 For the Cloudflare rate-limit rule, target hostname `emails.hackthehill.com`, path `/subscribe`, and method `POST`. The deployed Free-plan rule allows **10 requests per IP per 10 seconds** and blocks for 10 seconds (Cloudflare Free only permits a 10-second period/mitigation window). The Worker already enforces a 15-minute per-address confirmation resend cooldown. No KV namespace is required.
 
-The canonical route in the Hack the Hill Cloudflare account is `emails.hackthehill.com/*` → `email-list-manager`; the two root-domain subscribe/unsubscribe routes only provide permanent redirects.
+The only route in the Hack the Hill Cloudflare account is `emails.hackthehill.com/*` → `email-list-manager`.
 
 ## SES verification records for `hackthehill.com`
 
