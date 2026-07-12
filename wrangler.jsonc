@@ -1,0 +1,29 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "email-list-manager",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-11",
+	"compatibility_flags": ["global_fetch_strictly_public"],
+	"routes": [
+		{
+			"pattern": "emails.hackthehill.com/*",
+			"zone_name": "hackthehill.com"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "email-list-manager",
+			"database_id": "4daf12d1-0eae-4454-8f38-b80bdf8dbfab",
+			"migrations_dir": "migrations"
+		}
+	],
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"PUBLIC_BASE_URL": "https://emails.hackthehill.com",
+		"CONSENT_TEXT_VERSION": "email-list-v1",
+		"ALLOWED_ORIGINS": "https://hackthehill.com,https://www.hackthehill.com"
+	}
+}
