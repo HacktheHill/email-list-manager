@@ -6,7 +6,15 @@
 	"compatibility_flags": ["global_fetch_strictly_public"],
 	"routes": [
 		{
-			"pattern": "email-list-manager.hackthehill.com/*",
+			"pattern": "emails.hackthehill.com/*",
+			"zone_name": "hackthehill.com"
+		},
+		{
+			"pattern": "hackthehill.com/subscribe*",
+			"zone_name": "hackthehill.com"
+		},
+		{
+			"pattern": "hackthehill.com/unsubscribe*",
 			"zone_name": "hackthehill.com"
 		}
 	],
@@ -22,7 +30,7 @@
 		"enabled": true
 	},
 	"vars": {
-		"PUBLIC_BASE_URL": "https://email-list-manager.hackthehill.com",
+		"PUBLIC_BASE_URL": "https://emails.hackthehill.com",
 		"CONSENT_TEXT_VERSION": "email-list-v1",
 		"ALLOWED_ORIGINS": "https://hackthehill.com,https://www.hackthehill.com"
 	}

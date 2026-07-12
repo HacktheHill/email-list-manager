@@ -26,6 +26,11 @@ type UnsubscribePayload = {
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url);
+		if ((url.pathname === "/subscribe" || url.pathname === "/unsubscribe") && url.hostname === "hackthehill.com") {
+			const canonicalUrl = new URL(url.toString());
+			canonicalUrl.hostname = new URL(env.PUBLIC_BASE_URL).hostname;
+			return Response.redirect(canonicalUrl.toString(), 308);
+		}
 
 		if (request.method === "OPTIONS") {
 			return response(null, { status: 204, headers: { Allow: "GET, POST, OPTIONS" } }, request, env);

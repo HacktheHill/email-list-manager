@@ -9,8 +9,8 @@ All state changes use `POST`. Browser `GET` requests only render a small page, w
 ### Subscribe
 
 ```text
-GET  https://email-list-manager.hackthehill.com/subscribe
-POST https://email-list-manager.hackthehill.com/subscribe
+GET  https://emails.hackthehill.com/subscribe
+POST https://emails.hackthehill.com/subscribe
 ```
 
 The POST body can be JSON or form data:
@@ -30,9 +30,11 @@ To confirm a request, POST the token from the confirmation URL:
 ### Unsubscribe
 
 ```text
-GET  https://email-list-manager.hackthehill.com/unsubscribe?token=...
-POST https://email-list-manager.hackthehill.com/unsubscribe?token=...
+GET  https://emails.hackthehill.com/unsubscribe?token=...
+POST https://emails.hackthehill.com/unsubscribe?token=...
 ```
+
+The root-domain convenience URLs `https://hackthehill.com/subscribe` and `https://hackthehill.com/unsubscribe` permanently redirect to these canonical endpoints.
 
 `POST` also accepts the RFC 8058 `List-Unsubscribe=One-Click` request. The legacy `?t=` query parameter remains accepted for old messages.
 
@@ -44,7 +46,7 @@ POST https://email-list-manager.hackthehill.com/unsubscribe?token=...
 curl \
   -H "Authorization: Bearer $EXPORT_TOKEN" \
   -H 'Accept: text/csv' \
-  'https://email-list-manager.hackthehill.com/subscribe?export=csv'
+  'https://emails.hackthehill.com/subscribe?export=csv'
 ```
 
 The response contains only confirmed active addresses and is marked `no-store`.
@@ -67,7 +69,7 @@ The production Worker and D1 database are already deployed. The SES DNS records 
    npx wrangler d1 migrations apply email-list-manager --remote
    ```
 
-3. Configure the `email-list-manager.hackthehill.com` custom domain/route.
+3. Configure the `emails.hackthehill.com` custom domain/route.
 4. Set Worker secrets. Never put these values in `wrangler.jsonc`:
 
    ```bash
@@ -88,11 +90,11 @@ The production Worker and D1 database are already deployed. The SES DNS records 
 6. Configure Cloudflare rate limiting for subscription POSTs by source IP and enable Worker observability.
 7. Configure AWS SES account-level suppression for both hard bounces and complaints, plus a configuration set with delivery/bounce/complaint event destinations.
 
-The deployed configuration uses `info@hackthehill.com` as the sender and `my-first-configuration-set` for SES. SES DKIM verification is still pending; sending will become usable as soon as AWS marks the identity verified.
+The deployed configuration uses `info@hackthehill.com` as the sender and `my-first-configuration-set` for SES. SES DKIM, domain, and custom MAIL FROM verification are complete.
 
-For the Cloudflare rate-limit rule, target hostname `email-list-manager.hackthehill.com`, path `/subscribe`, and method `POST`. The deployed Free-plan rule allows **10 requests per IP per 10 seconds** and blocks for 10 seconds (Cloudflare Free only permits a 10-second period/mitigation window). The Worker already enforces a 15-minute per-address confirmation resend cooldown. No KV namespace is required.
+For the Cloudflare rate-limit rule, target hostname `emails.hackthehill.com`, path `/subscribe`, and method `POST`. The deployed Free-plan rule allows **10 requests per IP per 10 seconds** and blocks for 10 seconds (Cloudflare Free only permits a 10-second period/mitigation window). The Worker already enforces a 15-minute per-address confirmation resend cooldown. No KV namespace is required.
 
-The only route in the Hack the Hill Cloudflare account is `email-list-manager.hackthehill.com/*` → `email-list-manager`; the retired vote-domain Worker and route are not used by this service.
+The canonical route in the Hack the Hill Cloudflare account is `emails.hackthehill.com/*` → `email-list-manager`; the two root-domain subscribe/unsubscribe routes only provide permanent redirects.
 
 ## SES verification records for `hackthehill.com`
 
