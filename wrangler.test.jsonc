@@ -1,0 +1,26 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "hack-the-hill-newsletter-test",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-03-10",
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "hack-the-hill-newsletter-test",
+			"database_id": "newsletter-test",
+			"migrations_dir": "migrations"
+		}
+	],
+	"vars": {
+		"PUBLIC_BASE_URL": "https://newsletter.hackthehill.com",
+		"CONSENT_TEXT_VERSION": "newsletter-consent-v1",
+		"ALLOWED_ORIGINS": "https://hackthehill.com",
+		"EXPORT_TOKEN": "export-token",
+		"SUPPRESSION_READ_TOKEN": "suppression-token",
+		"UNSUBSCRIBE_TOKEN_SECRET": "unsubscribe-secret",
+		"AWS_ACCESS_KEY_ID": "test-access-key",
+		"AWS_SECRET_ACCESS_KEY": "test-secret-key",
+		"AWS_REGION": "us-east-1",
+		"SES_FROM_EMAIL": "info@hackthehill.com"
+	}
+}

@@ -1,0 +1,13 @@
+interface Env {
+	EXPORT_TOKEN: string;
+	SUPPRESSION_READ_TOKEN: string;
+	UNSUBSCRIBE_TOKEN_SECRET: string;
+	UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET?: string;
+	AWS_ACCESS_KEY_ID: string;
+	AWS_SECRET_ACCESS_KEY: string;
+	AWS_SESSION_TOKEN?: string;
+	AWS_REGION: string;
+	SES_FROM_EMAIL: string;
+	SES_FROM_NAME?: string;
+	SES_CONFIGURATION_SET?: string;
+}
