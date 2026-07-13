@@ -4,6 +4,7 @@ const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
 const CONFIRMATION_RESEND_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_EMAIL_LENGTH = 254;
 const MAX_EXPORT_PAGE_SIZE = 1000;
+const MAX_REQUEST_BODY_BYTES = 16 * 1024;
 
 type SubscriberStatus = "pending" | "active" | "unsubscribed";
 
@@ -22,6 +23,8 @@ type SubscribeBody = {
 type UnsubscribePayload = {
 	email: string;
 };
+
+class RequestBodyTooLargeError extends Error {}
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
@@ -42,7 +45,15 @@ export default {
 
 			return await handleUnsubscribe(request, env, url);
 		} catch (error) {
-			console.error("email list request failed", error instanceof Error ? error.message : String(error));
+			if (error instanceof RequestBodyTooLargeError) {
+				logEvent("request_rejected", { outcome: "body_too_large", path: url.pathname });
+				return textResponse("Request body too large", 413, request, env);
+			}
+			logEvent("request_failed", {
+				level: "error",
+				path: url.pathname,
+				error: error instanceof Error ? error.message : String(error),
+			});
 			return jsonResponse({ ok: false, error: "Service temporarily unavailable" }, 503, request, env);
 		}
 	},
@@ -64,21 +75,19 @@ async function handleSubscribe(request: Request, env: Env, url: URL): Promise<Re
 	if (request.method !== "POST") {
 		return methodNotAllowed("GET, POST, OPTIONS", request, env);
 	}
-	if (requestBodyTooLarge(request)) {
-		return textResponse("Request body too large", 413, request, env);
-	}
-
 	const body = await parseBody(request);
 	const token = firstString(body.token) ?? url.searchParams.get("token");
 	if (token) {
 		return confirmSubscription(token, request, env);
 	}
 	if (!isConsentGiven(body.consent)) {
+		logEvent("subscription", { outcome: "consent_required" });
 		return jsonResponse({ ok: false, error: "Consent is required" }, 400, request, env);
 	}
 
 	const email = normalizeEmail(body.email);
 	if (!email) {
+		logEvent("subscription", { outcome: "invalid_email" });
 		return jsonResponse({ ok: false, error: "A valid email address is required" }, 400, request, env);
 	}
 
@@ -99,12 +108,14 @@ async function handleUnsubscribe(request: Request, env: Env, url: URL): Promise<
 		token = firstString((await parseBody(request)).token);
 	}
 	if (!token) {
+		logEvent("unsubscribe", { outcome: "missing_token" });
 		return textResponse("Missing token", 400, request, env);
 	}
 
 	if (request.method === "GET") {
 		const payload = await verifyUnsubscribeToken(token, env);
 		if (!payload) {
+			logEvent("unsubscribe", { outcome: "invalid_token", method: "GET" });
 			return htmlResponse(renderUnsubscribePage(false), 400, request, env);
 		}
 
@@ -117,10 +128,12 @@ async function handleUnsubscribe(request: Request, env: Env, url: URL): Promise<
 
 	const payload = await verifyUnsubscribeToken(token, env);
 	if (!payload) {
+		logEvent("unsubscribe", { outcome: "invalid_token", method: "POST" });
 		return textResponse("Invalid token", 400, request, env);
 	}
 
 	await recordUnsubscribe(payload.email, env);
+	logEvent("unsubscribe", { outcome: "recorded" });
 	return unsubscribeResponse(request, env);
 }
 
@@ -135,6 +148,11 @@ async function requestSubscription(email: string, emailOriginal: string, request
 
 	// Always return the same public response for active, pending, and unknown addresses.
 	if (existing?.status === "active" || isWithinCooldown(existing?.confirmation_sent_at, now.getTime())) {
+		if (existing?.status === "active") {
+			logEvent("subscription", { outcome: "already_active" });
+		} else {
+			logEvent("rate_limited", { outcome: "confirmation_cooldown" });
+		}
 		return acceptedSubscriptionResponse(request, env);
 	}
 
@@ -156,6 +174,7 @@ async function requestSubscription(email: string, emailOriginal: string, request
 			consent_text_version = excluded.consent_text_version,
 			requested_at = excluded.requested_at,
 			confirmed_at = NULL,
+			unsubscribed_at = NULL,
 			confirmation_sent_at = excluded.confirmation_sent_at,
 			updated_at = excluded.updated_at,
 			confirmation_token_hash = excluded.confirmation_token_hash,
@@ -178,6 +197,7 @@ async function requestSubscription(email: string, emailOriginal: string, request
 		.first<{ email_normalized: string }>();
 
 	if (!claimed) {
+		logEvent("rate_limited", { outcome: "confirmation_cooldown" });
 		return acceptedSubscriptionResponse(request, env);
 	}
 
@@ -190,7 +210,11 @@ async function requestSubscription(email: string, emailOriginal: string, request
 	try {
 		await sendConfirmationEmail(email, token, env);
 	} catch (error) {
-		console.error("confirmation email failed", error instanceof Error ? error.message : String(error));
+		logEvent("subscription", {
+			level: "error",
+			outcome: "confirmation_email_failed",
+			error: error instanceof Error ? error.message : String(error),
+		});
 		await env.DB.prepare(
 			"UPDATE subscribers SET confirmation_sent_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending'",
 		)
@@ -199,11 +223,13 @@ async function requestSubscription(email: string, emailOriginal: string, request
 		return jsonResponse({ ok: false, error: "Unable to send confirmation email" }, 503, request, env);
 	}
 
+	logEvent("subscription", { outcome: eventType });
 	return acceptedSubscriptionResponse(request, env);
 }
 
 async function confirmSubscription(token: string, request: Request, env: Env): Promise<Response> {
 	if (token.length > 512) {
+		logEvent("confirmation", { outcome: "invalid_token" });
 		return textResponse("Invalid or expired confirmation link", 400, request, env);
 	}
 
@@ -216,16 +242,18 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 		.first<{ email_normalized: string }>();
 
 	if (!row) {
+		logEvent("confirmation", { outcome: "invalid_token" });
 		return textResponse("Invalid or expired confirmation link", 400, request, env);
 	}
 
 	const activated = await env.DB.prepare(
-		"UPDATE subscribers SET status = 'active', confirmed_at = ?, confirmation_token_hash = NULL, confirmation_expires_at = NULL, confirmation_sent_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending' RETURNING email_normalized",
+		"UPDATE subscribers SET status = 'active', confirmed_at = ?, unsubscribed_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, confirmation_sent_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending' RETURNING email_normalized",
 	)
 		.bind(nowIso, nowIso, row.email_normalized)
 		.first<{ email_normalized: string }>();
 
 	if (!activated) {
+		logEvent("confirmation", { outcome: "invalid_token" });
 		return textResponse("Invalid or expired confirmation link", 400, request, env);
 	}
 
@@ -234,6 +262,7 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 	)
 		.bind(row.email_normalized, nowIso, env.CONSENT_TEXT_VERSION)
 		.run();
+	logEvent("confirmation", { outcome: "activated" });
 
 	if (wantsHtml(request)) {
 		return htmlResponse(renderConfirmationResult(), 200, request, env);
@@ -267,7 +296,8 @@ async function recordUnsubscribe(email: string, env: Env): Promise<void> {
 }
 
 async function exportCsv(request: Request, env: Env): Promise<Response> {
-	if (!constantTimeEquals(request.headers.get("authorization") ?? "", `Bearer ${env.EXPORT_TOKEN}`)) {
+	if (!(await timingSafeStringEquals(request.headers.get("authorization") ?? "", `Bearer ${env.EXPORT_TOKEN}`))) {
+		logEvent("export", { outcome: "unauthorized" });
 		return textResponse("Unauthorized", 401, request, env);
 	}
 
@@ -289,6 +319,7 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 		.catch(() => undefined);
 
 	const csv = ["email", ...emails.map(escapeCsv)].join("\r\n") + "\r\n";
+	logEvent("export", { outcome: "completed", rowCount: emails.length });
 	return response(csv, {
 		status: 200,
 		headers: {
@@ -300,7 +331,8 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 }
 
 async function exportSuppressed(request: Request, env: Env, url: URL): Promise<Response> {
-	if (!constantTimeEquals(request.headers.get("authorization") ?? "", `Bearer ${env.SUPPRESSION_READ_TOKEN}`)) {
+	if (!(await timingSafeStringEquals(request.headers.get("authorization") ?? "", `Bearer ${env.SUPPRESSION_READ_TOKEN}`))) {
+		logEvent("suppression", { outcome: "unauthorized" });
 		return textResponse("Unauthorized", 401, request, env);
 	}
 
@@ -322,6 +354,7 @@ async function exportSuppressed(request: Request, env: Env, url: URL): Promise<R
 	const hasNext = result.results.length > limit;
 	const page = hasNext ? result.results.slice(0, limit) : result.results;
 	const nextCursor = hasNext ? page[page.length - 1]?.email_normalized : undefined;
+	logEvent("suppression", { outcome: "completed", rowCount: page.length, done: !hasNext });
 
 	return jsonResponse(
 		{ emails: page.map(row => row.email_normalized), cursor: nextCursor, done: !hasNext },
@@ -385,7 +418,7 @@ async function verifyUnsubscribeToken(token: string, env: Env): Promise<Unsubscr
 	);
 	for (const secret of secrets) {
 		const expected = await hmacBase64Url(payloadPart, secret);
-		if (!constantTimeEquals(expected, signaturePart)) {
+		if (!(await timingSafeStringEquals(expected, signaturePart))) {
 			continue;
 		}
 
@@ -402,15 +435,22 @@ async function verifyUnsubscribeToken(token: string, env: Env): Promise<Unsubscr
 }
 
 async function parseBody(request: Request): Promise<SubscribeBody> {
-	const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+	const contentTypeHeader = request.headers.get("content-type") ?? "";
+	const contentType = contentTypeHeader.split(";", 1)[0].trim().toLowerCase();
+	const body = await readBoundedBody(request, MAX_REQUEST_BODY_BYTES);
 	if (contentType === "application/json") {
-		const value = (await request.json()) as unknown;
+		const value = JSON.parse(new TextDecoder().decode(body)) as unknown;
 		return value && typeof value === "object" ? value as SubscribeBody : {};
 	}
 
 	if (contentType === "application/x-www-form-urlencoded" || contentType === "multipart/form-data") {
-		const form = await request.formData();
-		return { email: form.get("email"), token: form.get("token") };
+		const formRequest = new Request("https://body.invalid/", {
+			method: "POST",
+			headers: { "Content-Type": contentTypeHeader },
+			body,
+		});
+		const form = await formRequest.formData();
+		return { email: form.get("email"), token: form.get("token"), consent: form.get("consent") };
 	}
 
 	return {};
@@ -481,25 +521,54 @@ function decodeBase64Url(value: string): string {
 	return new TextDecoder().decode(Uint8Array.from(atob(padded), character => character.charCodeAt(0)));
 }
 
-function constantTimeEquals(a: string, b: string): boolean {
-	if (a.length !== b.length) {
-		return false;
-	}
-
-	let mismatch = 0;
-	for (let index = 0; index < a.length; index++) {
-		mismatch |= a.charCodeAt(index) ^ b.charCodeAt(index);
-	}
-	return mismatch === 0;
+async function timingSafeStringEquals(a: string, b: string): Promise<boolean> {
+	const [aDigest, bDigest] = await Promise.all([
+		crypto.subtle.digest("SHA-256", new TextEncoder().encode(a)),
+		crypto.subtle.digest("SHA-256", new TextEncoder().encode(b)),
+	]);
+	return crypto.subtle.timingSafeEqual(aDigest, bDigest);
 }
 
 function firstString(value: unknown): string | null {
 	return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function requestBodyTooLarge(request: Request): boolean {
+async function readBoundedBody(request: Request, maxBytes: number): Promise<Uint8Array> {
 	const length = Number(request.headers.get("content-length"));
-	return Number.isFinite(length) && length > 16 * 1024;
+	if (Number.isFinite(length) && length > maxBytes) {
+		throw new RequestBodyTooLargeError();
+	}
+
+	if (!request.body) {
+		return new Uint8Array();
+	}
+
+	const reader = request.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				throw new RequestBodyTooLargeError();
+			}
+			chunks.push(value);
+		}
+	} finally {
+		if (total > maxBytes) {
+			await reader.cancel().catch(() => undefined);
+		}
+	}
+
+	const result = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		result.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return result;
 }
 
 function isConsentGiven(value: unknown): boolean {
@@ -580,6 +649,10 @@ function unsubscribeResponse(request: Request, env: Env): Response {
 
 function response(body: BodyInit | null, init: ResponseInit, request: Request, env: Env): Response {
 	const headers = new Headers(init.headers);
+	headers.set("Content-Security-Policy", "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+	headers.set("X-Content-Type-Options", "nosniff");
+	headers.set("Referrer-Policy", "no-referrer");
+	headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
 	const origin = request.headers.get("origin");
 	if (origin && allowedOrigins(env).has(origin)) {
 		headers.set("Access-Control-Allow-Origin", origin);
@@ -609,4 +682,13 @@ function textResponse(text: string, status: number, request: Request, env: Env):
 
 function methodNotAllowed(allow: string, request: Request, env: Env): Response {
 	return response("Method Not Allowed", { status: 405, headers: { Allow: allow } }, request, env);
+}
+
+function logEvent(event: string, fields: Record<string, string | number | boolean> = {}): void {
+	const payload = { event, ...fields };
+	if (fields.level === "error") {
+		console.error(JSON.stringify(payload));
+		return;
+	}
+	console.log(JSON.stringify(payload));
 }
