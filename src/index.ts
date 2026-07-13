@@ -330,7 +330,7 @@ async function sendConfirmationEmail(email: string, token: string, locale: Local
 			contact: "Hack the Hill is organized by Capital Technology Network.",
 		};
 	const escapedUrl = escapeHtml(url);
-	const html = `<!doctype html><html lang="${locale}"><body style="margin:0;background:#f6bc83;font-family:Arial,sans-serif;color:#fff"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f6bc83;padding:24px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#84010b;border-radius:16px;overflow:hidden"><tr><td style="padding:24px;text-align:center;background:#fff3b6"><img src="https://hackthehill.com/icons/android-chrome-512x512.png" width="96" height="96" alt="Hack the Hill" style="display:block;margin:0 auto;border:0"></td></tr><tr><td style="padding:32px 28px"><p style="margin:0 0 20px;font-size:18px;line-height:1.55">${escapeHtml(copy.intro)}</p><p style="text-align:center;margin:28px 0"><a href="${escapedUrl}" style="display:inline-block;padding:14px 22px;border-radius:16px;background:#fff3b6;color:#84010b;font-weight:bold;text-decoration:none">${escapeHtml(copy.cta)}</a></p><p style="margin:16px 0;font-size:15px;line-height:1.55">${escapeHtml(copy.expires)} ${escapeHtml(copy.ignore)}</p><hr style="border:0;border-top:1px solid #f6bc83;margin:28px 0"><p style="margin:0;font-size:13px;line-height:1.55">${escapeHtml(copy.contact)}<br>info@hackthehill.com<br>0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada</p></td></tr></table></td></tr></table></body></html>`;
+	const html = `<!doctype html><html lang="${locale}"><body style="margin:0;background:#f6bc83;font-family:Arial,sans-serif"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f6bc83;padding:24px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#84010b;border-radius:16px;overflow:hidden"><tr><td style="padding:32px 28px;color:#fff"><p style="margin:0 0 20px;font-size:18px;line-height:1.55">${escapeHtml(copy.intro)}</p><p style="text-align:center;margin:28px 0"><a href="${escapedUrl}" style="display:inline-block;padding:14px 22px;border-radius:16px;background:#f6bc83;color:#84010b;font-weight:bold;text-decoration:none">${escapeHtml(copy.cta)}</a></p><p style="margin:16px 0 0;font-size:15px;line-height:1.55">${escapeHtml(copy.expires)} ${escapeHtml(copy.ignore)}</p></td></tr></table><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px"><tr><td style="padding:18px 8px 0;text-align:center;color:#333;font-size:13px;line-height:1.55"><p style="margin:0 0 6px">${escapeHtml(copy.contact)}</p><p style="margin:0 0 6px"><a href="mailto:info@hackthehill.com" style="color:#84010b;text-decoration:underline">info@hackthehill.com</a></p><p style="margin:0">0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada</p></td></tr></table></td></tr></table></body></html>`;
 	const text = `${copy.intro}\n\n${copy.cta}: ${url}\n\n${copy.expires} ${copy.ignore}\n\n${copy.contact}\ninfo@hackthehill.com\n0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada`;
 	const from = env.SES_FROM_NAME ? `${env.SES_FROM_NAME} <${env.SES_FROM_EMAIL}>` : env.SES_FROM_EMAIL;
 	const client = new AwsClient({ accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY, sessionToken: env.AWS_SESSION_TOKEN, region: env.AWS_REGION, service: "ses" });
@@ -517,18 +517,18 @@ function renderSubscribePage(token: string | null, locale: Locale, error = "", e
 
 function renderConfirmationResult(locale: Locale): string {
 	const text = locale === "fr" ? { title: "Votre abonnement est confirmé", copy: "Vous recevrez maintenant les mises à jour par courriel de Hack the Hill.", link: "Visiter hackthehill.com" } : { title: "You’re subscribed", copy: "You’ll now receive occasional email updates from Hack the Hill.", link: "Visit hackthehill.com" };
-	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p><a class="button" href="${WEBSITE_ORIGIN}">${text.link}</a></p>`, locale, "/subscribe");
+	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p class="action-row"><a class="button" href="${WEBSITE_ORIGIN}">${text.link}</a></p>`, locale, "/subscribe");
 }
 
 function renderInvalidConfirmation(locale: Locale): string {
 	const text = locale === "fr" ? { title: "Lien de confirmation invalide", copy: "Ce lien de confirmation est invalide ou a expiré.", link: "Recommencer" } : { title: "Invalid confirmation link", copy: "This confirmation link is invalid or has expired.", link: "Start again" };
-	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p><a class="button" href="/subscribe?lang=${locale}">${text.link}</a></p>`, locale, "/subscribe");
+	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p class="action-row"><a class="button" href="/subscribe?lang=${locale}">${text.link}</a></p>`, locale, "/subscribe");
 }
 
 function renderUnsubscribePage(valid: boolean, token: string, locale: Locale): string {
 	if (!valid) {
 		const text = locale === "fr" ? { title: "Lien de désabonnement invalide", copy: "Ce lien de désabonnement est invalide.", link: "S’abonner aux mises à jour" } : { title: "Invalid unsubscribe link", copy: "This unsubscribe link is invalid.", link: "Subscribe to updates" };
-		return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p><a class="button" href="/subscribe?lang=${locale}">${text.link}</a></p>`, locale, "/unsubscribe");
+		return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p class="action-row"><a class="button" href="/subscribe?lang=${locale}">${text.link}</a></p>`, locale, "/unsubscribe");
 	}
 	const text = locale === "fr" ? { title: "Se désabonner des mises à jour de Hack the Hill", copy: "Vous cesserez de recevoir les annonces, les nouvelles et les occasions de Hack the Hill à cette adresse.", button: "Se désabonner" } : { title: "Unsubscribe from Hack the Hill updates", copy: "You’ll stop receiving Hack the Hill announcements, news, and opportunities at this address.", button: "Unsubscribe" };
 	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><form class="form" method="post" action="/unsubscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><input type="hidden" name="lang" value="${locale}"><button class="button button-secondary" type="submit">${text.button}</button></form>`, locale, "/unsubscribe", { token });
@@ -545,7 +545,7 @@ function acceptedSubscriptionResponse(request: Request, env: Env, locale: Locale
 function unsubscribeResponse(request: Request, env: Env, locale: Locale): Response {
 	if (wantsHtml(request)) {
 		const copy = locale === "fr" ? { title: "Vous êtes désabonné", text: "Vous ne recevrez plus les mises à jour par courriel de Hack the Hill.", link: "S’abonner à nouveau" } : { title: "You’re unsubscribed", text: "You won’t receive future Hack the Hill email updates.", link: "Subscribe again" };
-		return htmlResponse(renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p><p><a class="button" href="/subscribe?lang=${locale}">${copy.link}</a></p>`, locale, "/unsubscribe"), 200, request, env, locale);
+		return htmlResponse(renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p><p class="action-row"><a class="button" href="/subscribe?lang=${locale}">${copy.link}</a></p>`, locale, "/unsubscribe"), 200, request, env, locale);
 	}
 	return textResponse("ok", 200, request, env);
 }

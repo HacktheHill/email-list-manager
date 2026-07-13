@@ -1,5 +1,5 @@
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const unsubscribeSecret = "unsubscribe-secret";
 // Keep the test schema in lockstep with the checked-in migrations, including
@@ -25,6 +25,10 @@ beforeAll(async () => {
 beforeEach(async () => {
 	await env.DB.prepare("DELETE FROM subscription_events").run();
 	await env.DB.prepare("DELETE FROM subscribers").run();
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 describe("email list subscription service", () => {
@@ -104,6 +108,37 @@ describe("email list subscription service", () => {
 		expect(frenchHtml).toContain("Recevez occasionnellement par courriel les annonces, les nouvelles et les occasions de Hack the Hill.");
 		expect(frenchHtml).toContain("Nous vous enverrons un courriel de confirmation. Vous pouvez vous désabonner en tout temps.");
 		expect(french.headers.get("Content-Language")).toBe("fr");
+	});
+
+	it("sends the simplified confirmation email with an external footer", async () => {
+		let outboundPayload: unknown;
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+			const outboundRequest = input instanceof Request ? input : new Request(input);
+			outboundPayload = await outboundRequest.clone().json();
+			return new Response("{}", { status: 200 });
+		});
+		const response = await SELF.fetch("https://emails.hackthehill.com/subscribe", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ email: "confirmation-email@example.com", lang: "en" }),
+		});
+		expect(response.status).toBe(202);
+		expect(fetchSpy).toHaveBeenCalledOnce();
+
+		const payload = outboundPayload as {
+			FromEmailAddress: string;
+			ReplyToAddresses: string[];
+			Content: { Simple: { Body: { Html: { Data: string } } } };
+		};
+		const emailHtml = payload.Content.Simple.Body.Html.Data;
+		expect(payload.FromEmailAddress).toBe("info@hackthehill.com");
+		expect(payload.ReplyToAddresses).toEqual(["info@hackthehill.com"]);
+		expect(emailHtml).not.toContain("<img");
+		expect(emailHtml).not.toContain("#fff3b6");
+		expect(emailHtml).toContain("background:#f6bc83");
+		expect(emailHtml).toContain("background:#84010b");
+		expect(emailHtml).toContain("color:#333");
+		expect(emailHtml).toContain('style="color:#84010b;text-decoration:underline"');
 	});
 
 	it("rejects legacy t token parameters", async () => {

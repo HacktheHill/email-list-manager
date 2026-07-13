@@ -111,7 +111,8 @@ h2 {
 }
 
 h1 {
-	font-size: clamp(2.3rem, 8vw, 4rem);
+	font-size: clamp(1.6rem, 4vw, 2.25rem);
+	line-height: 1.15;
 }
 
 h2 {
@@ -125,7 +126,7 @@ p {
 }
 
 .lede {
-	margin-top: 1.25rem;
+	margin-top: 0.75rem;
 	font-size: 1.1rem;
 	font-weight: 500;
 }
@@ -165,7 +166,10 @@ p {
 }
 
 .button {
-	justify-self: start;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	justify-self: center;
 	min-height: 3.25rem;
 	padding: 0.75rem 1.25rem;
 	border: 0;
@@ -175,6 +179,8 @@ p {
 	background: var(--dark-primary-color);
 	box-shadow: 0 6px 18px rgba(132, 1, 11, 0.2);
 	cursor: pointer;
+	text-align: center;
+	text-decoration: none;
 	transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -192,6 +198,12 @@ p {
 
 .button-secondary {
 	background: var(--medium-tertiary-color);
+}
+
+.action-row {
+	display: flex;
+	justify-content: center;
+	margin-top: 1.5rem;
 }
 
 .notice {
