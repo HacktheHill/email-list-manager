@@ -139,9 +139,9 @@ describe("email list subscription service", () => {
 		expect(emailHtml).not.toContain("<img");
 		expect(emailHtml).not.toContain("#fff3b6");
 		expect(emailHtml).toContain("background:#f6bc83");
-		expect(emailHtml).toContain("background:#84010b");
+		expect(emailHtml).toContain("background:#650014");
 		expect(emailHtml).toContain("color:#333");
-		expect(emailHtml).toContain('style="color:#84010b;text-decoration:underline"');
+		expect(emailHtml).toContain('style="color:#650014;text-decoration:underline"');
 	});
 
 	it("rejects legacy t token parameters", async () => {
