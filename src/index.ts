@@ -4,6 +4,7 @@ const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
 const CONFIRMATION_RESEND_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_EMAIL_LENGTH = 254;
 const MAX_EXPORT_PAGE_SIZE = 1000;
+const MAX_REQUEST_BODY_BYTES = 16 * 1024;
 
 type SubscriberStatus = "pending" | "active" | "unsubscribed";
 
@@ -22,6 +23,8 @@ type SubscribeBody = {
 type UnsubscribePayload = {
 	email: string;
 };
+
+class RequestBodyTooLargeError extends Error {}
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
@@ -42,6 +45,9 @@ export default {
 
 			return await handleUnsubscribe(request, env, url);
 		} catch (error) {
+			if (error instanceof RequestBodyTooLargeError) {
+				return textResponse("Request body too large", 413, request, env);
+			}
 			console.error("email list request failed", error instanceof Error ? error.message : String(error));
 			return jsonResponse({ ok: false, error: "Service temporarily unavailable" }, 503, request, env);
 		}
@@ -64,10 +70,6 @@ async function handleSubscribe(request: Request, env: Env, url: URL): Promise<Re
 	if (request.method !== "POST") {
 		return methodNotAllowed("GET, POST, OPTIONS", request, env);
 	}
-	if (requestBodyTooLarge(request)) {
-		return textResponse("Request body too large", 413, request, env);
-	}
-
 	const body = await parseBody(request);
 	const token = firstString(body.token) ?? url.searchParams.get("token");
 	if (token) {
@@ -402,15 +404,22 @@ async function verifyUnsubscribeToken(token: string, env: Env): Promise<Unsubscr
 }
 
 async function parseBody(request: Request): Promise<SubscribeBody> {
-	const contentType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+	const contentTypeHeader = request.headers.get("content-type") ?? "";
+	const contentType = contentTypeHeader.split(";", 1)[0].trim().toLowerCase();
+	const body = await readBoundedBody(request, MAX_REQUEST_BODY_BYTES);
 	if (contentType === "application/json") {
-		const value = (await request.json()) as unknown;
+		const value = JSON.parse(new TextDecoder().decode(body)) as unknown;
 		return value && typeof value === "object" ? value as SubscribeBody : {};
 	}
 
 	if (contentType === "application/x-www-form-urlencoded" || contentType === "multipart/form-data") {
-		const form = await request.formData();
-		return { email: form.get("email"), token: form.get("token") };
+		const formRequest = new Request("https://body.invalid/", {
+			method: "POST",
+			headers: { "Content-Type": contentTypeHeader },
+			body,
+		});
+		const form = await formRequest.formData();
+		return { email: form.get("email"), token: form.get("token"), consent: form.get("consent") };
 	}
 
 	return {};
@@ -497,9 +506,42 @@ function firstString(value: unknown): string | null {
 	return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function requestBodyTooLarge(request: Request): boolean {
+async function readBoundedBody(request: Request, maxBytes: number): Promise<Uint8Array> {
 	const length = Number(request.headers.get("content-length"));
-	return Number.isFinite(length) && length > 16 * 1024;
+	if (Number.isFinite(length) && length > maxBytes) {
+		throw new RequestBodyTooLargeError();
+	}
+
+	if (!request.body) {
+		return new Uint8Array();
+	}
+
+	const reader = request.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > maxBytes) {
+				throw new RequestBodyTooLargeError();
+			}
+			chunks.push(value);
+		}
+	} finally {
+		if (total > maxBytes) {
+			await reader.cancel().catch(() => undefined);
+		}
+	}
+
+	const result = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		result.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return result;
 }
 
 function isConsentGiven(value: unknown): boolean {

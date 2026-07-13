@@ -50,6 +50,37 @@ describe("email list subscription service", () => {
 		expect(row?.status).toBe("unsubscribed");
 	});
 
+	it("accepts consent from the browser subscribe form", async () => {
+		await seedSubscriber("member@example.com", "active");
+		const response = await SELF.fetch("https://emails.hackthehill.com/subscribe", {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "text/html" },
+			body: new URLSearchParams({ email: "member@example.com", consent: "yes" }),
+		});
+
+		expect(response.status).toBe(202);
+		expect(await response.text()).toContain("Check your email");
+	});
+
+	it("rejects a streamed body after it exceeds the byte limit", async () => {
+		const oversized = JSON.stringify({ email: `${"a".repeat(17_000)}@example.com`, consent: true });
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(oversized.slice(0, 8_000)));
+				controller.enqueue(new TextEncoder().encode(oversized.slice(8_000)));
+				controller.close();
+			},
+		});
+		const request = new Request("https://emails.hackthehill.com/subscribe", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body,
+		});
+
+		const response = await SELF.fetch(request);
+		expect(response.status).toBe(413);
+	});
+
 	it("accepts the browser confirmation form token in the POST body", async () => {
 		const token = await createUnsubscribeToken("form@example.com");
 		const form = new URLSearchParams({ token });
