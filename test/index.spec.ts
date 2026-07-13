@@ -95,6 +95,9 @@ describe("email list subscription service", () => {
 		expect(englishHtml).toContain("Get occasional Hack the Hill announcements, news, and opportunities by email.");
 		expect(englishHtml).toContain("We’ll send you a confirmation email. You can unsubscribe at any time.");
 		expect(englishHtml).toContain("https://hackthehill.com/Logos/hackthehill-banner.svg");
+		expect(englishHtml).toContain('class="brand-header"');
+		expect(englishHtml.indexOf('class="brand-header"')).toBeLessThan(englishHtml.indexOf('<main class="card">'));
+		expect(englishHtml.slice(englishHtml.indexOf('<main class="card">'))).not.toContain('class="brand"');
 		expect(englishHtml).toContain("/styles.css");
 		expect(englishHtml).not.toContain('type="checkbox"');
 		expect(englishHtml).not.toContain("consent");
