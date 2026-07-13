@@ -46,9 +46,14 @@ export default {
 			return await handleUnsubscribe(request, env, url);
 		} catch (error) {
 			if (error instanceof RequestBodyTooLargeError) {
+				logEvent("request_rejected", { outcome: "body_too_large", path: url.pathname });
 				return textResponse("Request body too large", 413, request, env);
 			}
-			console.error("email list request failed", error instanceof Error ? error.message : String(error));
+			logEvent("request_failed", {
+				level: "error",
+				path: url.pathname,
+				errorType: error instanceof Error ? error.name : "UnknownError",
+			});
 			return jsonResponse({ ok: false, error: "Service temporarily unavailable" }, 503, request, env);
 		}
 	},
@@ -76,11 +81,13 @@ async function handleSubscribe(request: Request, env: Env, url: URL): Promise<Re
 		return confirmSubscription(token, request, env);
 	}
 	if (!isConsentGiven(body.consent)) {
+		logEvent("subscription", { outcome: "consent_required" });
 		return jsonResponse({ ok: false, error: "Consent is required" }, 400, request, env);
 	}
 
 	const email = normalizeEmail(body.email);
 	if (!email) {
+		logEvent("subscription", { outcome: "invalid_email" });
 		return jsonResponse({ ok: false, error: "A valid email address is required" }, 400, request, env);
 	}
 
@@ -101,12 +108,14 @@ async function handleUnsubscribe(request: Request, env: Env, url: URL): Promise<
 		token = firstString((await parseBody(request)).token);
 	}
 	if (!token) {
+		logEvent("unsubscribe", { outcome: "missing_token" });
 		return textResponse("Missing token", 400, request, env);
 	}
 
 	if (request.method === "GET") {
 		const payload = await verifyUnsubscribeToken(token, env);
 		if (!payload) {
+			logEvent("unsubscribe", { outcome: "invalid_token", method: "GET" });
 			return htmlResponse(renderUnsubscribePage(false), 400, request, env);
 		}
 
@@ -119,10 +128,12 @@ async function handleUnsubscribe(request: Request, env: Env, url: URL): Promise<
 
 	const payload = await verifyUnsubscribeToken(token, env);
 	if (!payload) {
+		logEvent("unsubscribe", { outcome: "invalid_token", method: "POST" });
 		return textResponse("Invalid token", 400, request, env);
 	}
 
 	await recordUnsubscribe(payload.email, env);
+	logEvent("unsubscribe", { outcome: "recorded" });
 	return unsubscribeResponse(request, env);
 }
 
@@ -137,6 +148,11 @@ async function requestSubscription(email: string, emailOriginal: string, request
 
 	// Always return the same public response for active, pending, and unknown addresses.
 	if (existing?.status === "active" || isWithinCooldown(existing?.confirmation_sent_at, now.getTime())) {
+		if (existing?.status === "active") {
+			logEvent("subscription", { outcome: "already_active" });
+		} else {
+			logEvent("rate_limited", { outcome: "confirmation_cooldown" });
+		}
 		return acceptedSubscriptionResponse(request, env);
 	}
 
@@ -181,6 +197,7 @@ async function requestSubscription(email: string, emailOriginal: string, request
 		.first<{ email_normalized: string }>();
 
 	if (!claimed) {
+		logEvent("rate_limited", { outcome: "confirmation_cooldown" });
 		return acceptedSubscriptionResponse(request, env);
 	}
 
@@ -193,7 +210,11 @@ async function requestSubscription(email: string, emailOriginal: string, request
 	try {
 		await sendConfirmationEmail(email, token, env);
 	} catch (error) {
-		console.error("confirmation email failed", error instanceof Error ? error.message : String(error));
+		logEvent("subscription", {
+			level: "error",
+			outcome: "confirmation_email_failed",
+			errorType: error instanceof Error ? error.name : "UnknownError",
+		});
 		await env.DB.prepare(
 			"UPDATE subscribers SET confirmation_sent_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending'",
 		)
@@ -202,11 +223,13 @@ async function requestSubscription(email: string, emailOriginal: string, request
 		return jsonResponse({ ok: false, error: "Unable to send confirmation email" }, 503, request, env);
 	}
 
+	logEvent("subscription", { outcome: eventType });
 	return acceptedSubscriptionResponse(request, env);
 }
 
 async function confirmSubscription(token: string, request: Request, env: Env): Promise<Response> {
 	if (token.length > 512) {
+		logEvent("confirmation", { outcome: "invalid_token" });
 		return textResponse("Invalid or expired confirmation link", 400, request, env);
 	}
 
@@ -219,6 +242,7 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 		.first<{ email_normalized: string }>();
 
 	if (!row) {
+		logEvent("confirmation", { outcome: "invalid_token" });
 		return textResponse("Invalid or expired confirmation link", 400, request, env);
 	}
 
@@ -229,6 +253,7 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 		.first<{ email_normalized: string }>();
 
 	if (!activated) {
+		logEvent("confirmation", { outcome: "invalid_token" });
 		return textResponse("Invalid or expired confirmation link", 400, request, env);
 	}
 
@@ -237,6 +262,7 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 	)
 		.bind(row.email_normalized, nowIso, env.CONSENT_TEXT_VERSION)
 		.run();
+	logEvent("confirmation", { outcome: "activated" });
 
 	if (wantsHtml(request)) {
 		return htmlResponse(renderConfirmationResult(), 200, request, env);
@@ -271,6 +297,7 @@ async function recordUnsubscribe(email: string, env: Env): Promise<void> {
 
 async function exportCsv(request: Request, env: Env): Promise<Response> {
 	if (!(await timingSafeStringEquals(request.headers.get("authorization") ?? "", `Bearer ${env.EXPORT_TOKEN}`))) {
+		logEvent("export", { outcome: "unauthorized" });
 		return textResponse("Unauthorized", 401, request, env);
 	}
 
@@ -292,6 +319,7 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 		.catch(() => undefined);
 
 	const csv = ["email", ...emails.map(escapeCsv)].join("\r\n") + "\r\n";
+	logEvent("export", { outcome: "completed", rowCount: emails.length });
 	return response(csv, {
 		status: 200,
 		headers: {
@@ -304,6 +332,7 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 
 async function exportSuppressed(request: Request, env: Env, url: URL): Promise<Response> {
 	if (!(await timingSafeStringEquals(request.headers.get("authorization") ?? "", `Bearer ${env.SUPPRESSION_READ_TOKEN}`))) {
+		logEvent("suppression", { outcome: "unauthorized" });
 		return textResponse("Unauthorized", 401, request, env);
 	}
 
@@ -325,6 +354,7 @@ async function exportSuppressed(request: Request, env: Env, url: URL): Promise<R
 	const hasNext = result.results.length > limit;
 	const page = hasNext ? result.results.slice(0, limit) : result.results;
 	const nextCursor = hasNext ? page[page.length - 1]?.email_normalized : undefined;
+	logEvent("suppression", { outcome: "completed", rowCount: page.length, done: !hasNext });
 
 	return jsonResponse(
 		{ emails: page.map(row => row.email_normalized), cursor: nextCursor, done: !hasNext },
@@ -652,4 +682,13 @@ function textResponse(text: string, status: number, request: Request, env: Env):
 
 function methodNotAllowed(allow: string, request: Request, env: Env): Response {
 	return response("Method Not Allowed", { status: 405, headers: { Allow: allow } }, request, env);
+}
+
+function logEvent(event: string, fields: Record<string, string | number | boolean> = {}): void {
+	const payload = { event, ...fields };
+	if (fields.level === "error") {
+		console.error(JSON.stringify(payload));
+		return;
+	}
+	console.log(JSON.stringify(payload));
 }
