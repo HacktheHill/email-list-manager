@@ -5,6 +5,8 @@ const CONFIRMATION_RESEND_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_EMAIL_LENGTH = 254;
 const MAX_EXPORT_PAGE_SIZE = 1000;
 const MAX_REQUEST_BODY_BYTES = 16 * 1024;
+const MAX_SES_RESPONSE_BYTES = 16 * 1024;
+const SES_REQUEST_TIMEOUT_MS = 15_000;
 const WEBSITE_ORIGIN = "https://hackthehill.com";
 const PRIVACY_POLICY_URL = "https://cdn1.hackthehill.com/legal/privacy-policy.pdf";
 
@@ -339,9 +341,11 @@ async function sendConfirmationEmail(email: string, token: string, locale: Local
 	const text = `${copy.intro}\n\n${copy.cta}: ${url}\n\n${copy.expires} ${copy.ignore}\n\n${copy.contact}\ninfo@hackthehill.com\n0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada`;
 	const from = env.SES_FROM_NAME ? `${env.SES_FROM_NAME} <${env.SES_FROM_EMAIL}>` : env.SES_FROM_EMAIL;
 	const client = new AwsClient({ accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY, sessionToken: env.AWS_SESSION_TOKEN, region: env.AWS_REGION, service: "ses" });
+	const signal = AbortSignal.timeout(SES_REQUEST_TIMEOUT_MS);
 	const sesResponse = await client.fetch(`https://email.${env.AWS_REGION}.amazonaws.com/v2/email/outbound-emails`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
+		signal,
 		body: JSON.stringify({
 			FromEmailAddress: from,
 			ReplyToAddresses: ["info@hackthehill.com"],
@@ -350,7 +354,8 @@ async function sendConfirmationEmail(email: string, token: string, locale: Local
 			ConfigurationSetName: env.SES_CONFIGURATION_SET,
 		}),
 	});
-	if (!sesResponse.ok) throw new Error(`SES returned ${sesResponse.status}: ${(await sesResponse.text()).slice(0, 500)}`);
+	const responseBody = await readBoundedResponseBody(sesResponse, MAX_SES_RESPONSE_BYTES);
+	if (!sesResponse.ok) throw new Error(`SES returned ${sesResponse.status}: ${responseBody.slice(0, 500)}`);
 }
 
 async function verifyUnsubscribeToken(token: string, env: Env): Promise<UnsubscribePayload | null> {
@@ -496,6 +501,31 @@ async function readBoundedBody(request: Request, maxBytes: number): Promise<Uint
 		offset += chunk.byteLength;
 	}
 	return result;
+}
+
+async function readBoundedResponseBody(response: Response, maxBytes: number): Promise<string> {
+	if (!response.body) return "";
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > maxBytes) throw new Error("SES response body exceeded the configured limit");
+			chunks.push(value);
+		}
+	} finally {
+		if (total > maxBytes) await reader.cancel().catch(() => undefined);
+	}
+	const body = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		body.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(body);
 }
 
 function originalEmail(value: unknown): string | null {
