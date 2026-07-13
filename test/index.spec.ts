@@ -140,7 +140,13 @@ describe("email list subscription service", () => {
 
 	it("clears stale unsubscribe metadata when a resubscription is confirmed", async () => {
 		const token = "resubscribe-token";
-		await seedPending("returning@example.com", await sha256Hex(token), new Date(0).toISOString());
+		await seedPending("returning@example.com", await sha256Hex(token), new Date(0).toISOString(), "unsubscribed");
+
+		const beforeConfirmation = await SELF.fetch(
+			"https://emails.hackthehill.com/unsubscribe?suppressed=1",
+			{ headers: { Authorization: "Bearer suppression-token" } },
+		);
+		expect(await beforeConfirmation.json()).toEqual({ emails: ["returning@example.com"], done: true });
 
 		const response = await SELF.fetch(`https://emails.hackthehill.com/subscribe?token=${token}`, {
 			method: "POST",
@@ -197,16 +203,21 @@ async function seedSubscriber(email: string, status: "active" | "pending" | "uns
 		.run();
 }
 
-async function seedPending(email: string, tokenHash: string, unsubscribedAt: string | null = null): Promise<void> {
+async function seedPending(
+	email: string,
+	tokenHash: string,
+	unsubscribedAt: string | null = null,
+	status: "pending" | "unsubscribed" = "pending",
+): Promise<void> {
 	const now = new Date();
 	await env.DB.prepare(
 		`INSERT INTO subscribers (
 			email_normalized, email_original, status, source, consent_text_version,
 			requested_at, confirmed_at, unsubscribed_at, confirmation_sent_at,
 			updated_at, confirmation_token_hash, confirmation_expires_at
-		) VALUES (?, ?, 'pending', 'test', 'test', ?, NULL, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, 'test', 'test', ?, NULL, ?, ?, ?, ?, ?)`,
 	)
-		.bind(email, email, now.toISOString(), unsubscribedAt, now.toISOString(), now.toISOString(), tokenHash, new Date(now.getTime() + 60_000).toISOString())
+		.bind(email, email, status, now.toISOString(), unsubscribedAt, now.toISOString(), now.toISOString(), tokenHash, new Date(now.getTime() + 60_000).toISOString())
 		.run();
 }
 

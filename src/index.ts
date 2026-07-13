@@ -169,12 +169,12 @@ async function requestSubscription(email: string, emailOriginal: string, request
 		) VALUES (?, ?, 'pending', 'web', ?, ?, NULL, NULL, ?, ?, ?, ?)
 		ON CONFLICT(email_normalized) DO UPDATE SET
 			email_original = excluded.email_original,
-			status = 'pending',
+			status = CASE WHEN subscribers.status = 'unsubscribed' THEN 'unsubscribed' ELSE 'pending' END,
 			source = 'web',
 			consent_text_version = excluded.consent_text_version,
 			requested_at = excluded.requested_at,
 			confirmed_at = NULL,
-			unsubscribed_at = NULL,
+			unsubscribed_at = CASE WHEN subscribers.status = 'unsubscribed' THEN subscribers.unsubscribed_at ELSE NULL END,
 			confirmation_sent_at = excluded.confirmation_sent_at,
 			updated_at = excluded.updated_at,
 			confirmation_token_hash = excluded.confirmation_token_hash,
@@ -216,7 +216,7 @@ async function requestSubscription(email: string, emailOriginal: string, request
 			errorType: error instanceof Error ? error.name : "UnknownError",
 		});
 		await env.DB.prepare(
-			"UPDATE subscribers SET confirmation_sent_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending'",
+			"UPDATE subscribers SET confirmation_sent_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, updated_at = ? WHERE email_normalized = ? AND status IN ('pending', 'unsubscribed')",
 		)
 			.bind(new Date().toISOString(), email)
 			.run();
@@ -236,7 +236,7 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 	const nowIso = new Date().toISOString();
 	const tokenHash = await sha256Hex(token);
 	const row = await env.DB.prepare(
-		"SELECT email_normalized FROM subscribers WHERE confirmation_token_hash = ? AND status = 'pending' AND confirmation_expires_at > ?",
+		"SELECT email_normalized FROM subscribers WHERE confirmation_token_hash = ? AND status IN ('pending', 'unsubscribed') AND confirmation_expires_at > ?",
 	)
 		.bind(tokenHash, nowIso)
 		.first<{ email_normalized: string }>();
@@ -247,7 +247,7 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 	}
 
 	const activated = await env.DB.prepare(
-		"UPDATE subscribers SET status = 'active', confirmed_at = ?, unsubscribed_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, confirmation_sent_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending' RETURNING email_normalized",
+		"UPDATE subscribers SET status = 'active', confirmed_at = ?, unsubscribed_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, confirmation_sent_at = NULL, updated_at = ? WHERE email_normalized = ? AND status IN ('pending', 'unsubscribed') RETURNING email_normalized",
 	)
 		.bind(nowIso, nowIso, row.email_normalized)
 		.first<{ email_normalized: string }>();
