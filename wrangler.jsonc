@@ -27,6 +27,6 @@
 	"vars": {
 		"PUBLIC_BASE_URL": "https://emails.hackthehill.com",
 		"CONSENT_TEXT_VERSION": "email-updates-v2",
-		"ALLOWED_ORIGINS": "https://hackthehill.com,https://www.hackthehill.com"
+		"ALLOWED_ORIGINS": "https://hackthehill.com,https://www.hackthehill.com,https://*.website-1cg.pages.dev"
 	}
 }

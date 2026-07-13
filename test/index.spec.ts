@@ -281,6 +281,28 @@ describe("email list subscription service", () => {
 		expect(response.status).toBe(401);
 	});
 
+	it("allows Pages preview subdomains in CORS preflights without allowing lookalikes", async () => {
+		const previewOrigin = "https://a4b7cd9b.website-1cg.pages.dev";
+		const preview = await SELF.fetch("https://emails.hackthehill.com/subscribe", {
+			method: "OPTIONS",
+			headers: {
+				Origin: previewOrigin,
+				"Access-Control-Request-Method": "POST",
+				"Access-Control-Request-Headers": "content-type",
+			},
+		});
+		expect(preview.status).toBe(204);
+		expect(preview.headers.get("Access-Control-Allow-Origin")).toBe(previewOrigin);
+
+		for (const origin of ["https://website-1cg.pages.dev", "https://preview.website-1cg.pages.dev.evil"]) {
+			const response = await SELF.fetch("https://emails.hackthehill.com/subscribe", {
+				method: "OPTIONS",
+				headers: { Origin: origin, "Access-Control-Request-Method": "POST" },
+			});
+			expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+		}
+	});
+
 	it("adds restrictive security headers to HTML and API responses", async () => {
 		for (const url of [
 			"https://emails.hackthehill.com/subscribe",
