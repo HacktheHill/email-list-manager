@@ -2,7 +2,10 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "email-list-manager-test",
 	"main": "src/index.ts",
-	"compatibility_date": "2026-03-10",
+	"assets": {
+		"directory": "./public"
+	},
+	"compatibility_date": "2026-07-12",
 	"d1_databases": [
 		{
 			"binding": "DB",
@@ -13,11 +16,13 @@
 	],
 	"vars": {
 		"PUBLIC_BASE_URL": "https://emails.hackthehill.com",
-		"CONSENT_TEXT_VERSION": "email-list-v1",
-		"ALLOWED_ORIGINS": "https://hackthehill.com",
+		"CONSENT_TEXT_VERSION": "email-updates-v2",
+		"ALLOWED_ORIGINS": "https://hackthehill.com,https://*.website-1cg.pages.dev",
 		"EXPORT_TOKEN": "export-token",
 		"SUPPRESSION_READ_TOKEN": "suppression-token",
 		"UNSUBSCRIBE_TOKEN_SECRET": "unsubscribe-secret",
+		"UNSUBSCRIBE_TOKEN_ACTIVE_KEY_ID": "test-2026",
+		"UNSUBSCRIBE_TOKEN_KEYS": "{\"test-2026\":\"test-versioned-unsubscribe-secret-2026\"}",
 		"AWS_ACCESS_KEY_ID": "test-access-key",
 		"AWS_SECRET_ACCESS_KEY": "test-secret-key",
 		"AWS_REGION": "us-east-1",
