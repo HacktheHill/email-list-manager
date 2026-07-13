@@ -5,24 +5,26 @@ const CONFIRMATION_RESEND_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_EMAIL_LENGTH = 254;
 const MAX_EXPORT_PAGE_SIZE = 1000;
 const MAX_REQUEST_BODY_BYTES = 16 * 1024;
+const WEBSITE_ORIGIN = "https://hackthehill.com";
+const PRIVACY_POLICY_URL = "https://cdn1.hackthehill.com/legal/privacy-policy.pdf";
 
 type SubscriberStatus = "pending" | "active" | "unsubscribed";
+type Locale = "en" | "fr";
 
 type SubscriberRow = {
 	email_normalized: string;
 	status: SubscriberStatus;
 	confirmation_sent_at: string | null;
+	preferred_locale: Locale;
 };
 
-type SubscribeBody = {
+type RequestBody = {
 	email?: unknown;
 	token?: unknown;
-	consent?: unknown;
+	lang?: unknown;
 };
 
-type UnsubscribePayload = {
-	email: string;
-};
+type UnsubscribePayload = { email: string };
 
 class RequestBodyTooLargeError extends Error {}
 
@@ -39,14 +41,13 @@ export default {
 		}
 
 		try {
-			if (url.pathname === "/subscribe") {
-				return await handleSubscribe(request, env, url);
-			}
-
+			if (url.pathname === "/subscribe") return await handleSubscribe(request, env, url);
 			return await handleUnsubscribe(request, env, url);
 		} catch (error) {
 			if (error instanceof RequestBodyTooLargeError) {
 				logEvent("request_rejected", { outcome: "body_too_large", path: url.pathname });
+				const locale = resolveLocale(url.searchParams.get("lang"), request);
+				if (wantsHtml(request)) return htmlResponse(renderRequestTooLargePage(locale), 413, request, env, locale);
 				return textResponse("Request body too large", 413, request, env);
 			}
 			logEvent("request_failed", {
@@ -61,54 +62,46 @@ export default {
 
 async function handleSubscribe(request: Request, env: Env, url: URL): Promise<Response> {
 	if (url.searchParams.get("export") === "csv") {
-		if (request.method !== "GET") {
-			return methodNotAllowed("GET", request, env);
-		}
-
+		if (request.method !== "GET") return methodNotAllowed("GET", request, env);
 		return exportCsv(request, env);
 	}
 
+	const queryLocale = resolveLocale(url.searchParams.get("lang"), request);
 	if (request.method === "GET") {
-		return htmlResponse(renderSubscribePage(url.searchParams.get("token")), 200, request, env);
+		return htmlResponse(renderSubscribePage(url.searchParams.get("token"), queryLocale), 200, request, env, queryLocale);
 	}
 
-	if (request.method !== "POST") {
-		return methodNotAllowed("GET, POST, OPTIONS", request, env);
-	}
+	if (request.method !== "POST") return methodNotAllowed("GET, POST, OPTIONS", request, env);
 	const body = await parseBody(request);
+	const locale = resolveLocale(firstString(body.lang) ?? url.searchParams.get("lang"), request);
 	const token = firstString(body.token) ?? url.searchParams.get("token");
-	if (token) {
-		return confirmSubscription(token, request, env);
-	}
-	if (!isConsentGiven(body.consent)) {
-		logEvent("subscription", { outcome: "consent_required" });
-		return jsonResponse({ ok: false, error: "Consent is required" }, 400, request, env);
-	}
+	if (token) return confirmSubscription(token, request, env, locale);
 
 	const email = normalizeEmail(body.email);
 	if (!email) {
 		logEvent("subscription", { outcome: "invalid_email" });
+		if (wantsHtml(request)) {
+			return htmlResponse(renderSubscribePage(null, locale, localeText(locale, "invalidEmail")), 400, request, env, locale);
+		}
 		return jsonResponse({ ok: false, error: "A valid email address is required" }, 400, request, env);
 	}
 
-	return requestSubscription(email, originalEmail(body.email) ?? email, request, env);
+	return requestSubscription(email, originalEmail(body.email) ?? email, locale, request, env);
 }
 
 async function handleUnsubscribe(request: Request, env: Env, url: URL): Promise<Response> {
 	if (url.searchParams.get("suppressed") === "1") {
-		if (request.method !== "GET") {
-			return methodNotAllowed("GET", request, env);
-		}
-
+		if (request.method !== "GET") return methodNotAllowed("GET", request, env);
 		return exportSuppressed(request, env, url);
 	}
 
-	let token = url.searchParams.get("token") ?? url.searchParams.get("t");
-	if (!token && request.method === "POST") {
-		token = firstString((await parseBody(request)).token);
-	}
+	let body: RequestBody = {};
+	if (request.method === "POST") body = await parseBody(request);
+	const locale = resolveLocale(firstString(body.lang) ?? url.searchParams.get("lang"), request);
+	const token = url.searchParams.get("token") ?? firstString(body.token);
 	if (!token) {
 		logEvent("unsubscribe", { outcome: "missing_token" });
+		if (wantsHtml(request)) return htmlResponse(renderUnsubscribePage(false, "", locale), 400, request, env, locale);
 		return textResponse("Missing token", 400, request, env);
 	}
 
@@ -116,62 +109,56 @@ async function handleUnsubscribe(request: Request, env: Env, url: URL): Promise<
 		const payload = await verifyUnsubscribeToken(token, env);
 		if (!payload) {
 			logEvent("unsubscribe", { outcome: "invalid_token", method: "GET" });
-			return htmlResponse(renderUnsubscribePage(false), 400, request, env);
+			return htmlResponse(renderUnsubscribePage(false, "", locale), 400, request, env, locale);
 		}
-
-		return htmlResponse(renderUnsubscribePage(true, token), 200, request, env);
+		return htmlResponse(renderUnsubscribePage(true, token, locale), 200, request, env, locale);
 	}
 
-	if (request.method !== "POST") {
-		return methodNotAllowed("GET, POST, OPTIONS", request, env);
-	}
-
+	if (request.method !== "POST") return methodNotAllowed("GET, POST, OPTIONS", request, env);
 	const payload = await verifyUnsubscribeToken(token, env);
 	if (!payload) {
 		logEvent("unsubscribe", { outcome: "invalid_token", method: "POST" });
+		if (wantsHtml(request)) return htmlResponse(renderUnsubscribePage(false, "", locale), 400, request, env, locale);
 		return textResponse("Invalid token", 400, request, env);
 	}
 
 	await recordUnsubscribe(payload.email, env);
 	logEvent("unsubscribe", { outcome: "recorded" });
-	return unsubscribeResponse(request, env);
+	return unsubscribeResponse(request, env, locale);
 }
 
-async function requestSubscription(email: string, emailOriginal: string, request: Request, env: Env): Promise<Response> {
+async function requestSubscription(email: string, emailOriginal: string, locale: Locale, request: Request, env: Env): Promise<Response> {
 	const now = new Date();
 	const nowIso = now.toISOString();
 	const existing = await env.DB.prepare(
-		"SELECT email_normalized, status, confirmation_sent_at FROM subscribers WHERE email_normalized = ?",
+		"SELECT email_normalized, status, confirmation_sent_at, preferred_locale FROM subscribers WHERE email_normalized = ?",
 	)
 		.bind(email)
 		.first<SubscriberRow>();
 
-	// Always return the same public response for active, pending, and unknown addresses.
 	if (existing?.status === "active" || isWithinCooldown(existing?.confirmation_sent_at, now.getTime())) {
-		if (existing?.status === "active") {
-			logEvent("subscription", { outcome: "already_active" });
-		} else {
-			logEvent("rate_limited", { outcome: "confirmation_cooldown" });
-		}
-		return acceptedSubscriptionResponse(request, env);
+		logEvent(existing?.status === "active" ? "subscription" : "rate_limited", {
+			outcome: existing?.status === "active" ? "already_active" : "confirmation_cooldown",
+		});
+		return acceptedSubscriptionResponse(request, env, locale);
 	}
 
 	const token = randomToken();
 	const tokenHash = await sha256Hex(token);
 	const expiresAt = new Date(now.getTime() + CONFIRMATION_TTL_MS).toISOString();
 	const eventType = existing?.status === "unsubscribed" ? "resubscribe_requested" : "subscribe_requested";
-
 	const claimed = await env.DB.prepare(
 		`INSERT INTO subscribers (
-			email_normalized, email_original, status, source, consent_text_version,
+			email_normalized, email_original, status, source, consent_text_version, preferred_locale,
 			requested_at, confirmed_at, unsubscribed_at, confirmation_sent_at,
 			updated_at, confirmation_token_hash, confirmation_expires_at
-		) VALUES (?, ?, 'pending', 'web', ?, ?, NULL, NULL, ?, ?, ?, ?)
+		) VALUES (?, ?, 'pending', 'web', ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
 		ON CONFLICT(email_normalized) DO UPDATE SET
 			email_original = excluded.email_original,
 			status = CASE WHEN subscribers.status = 'unsubscribed' THEN 'unsubscribed' ELSE 'pending' END,
 			source = 'web',
 			consent_text_version = excluded.consent_text_version,
+			preferred_locale = excluded.preferred_locale,
 			requested_at = excluded.requested_at,
 			confirmed_at = NULL,
 			unsubscribed_at = CASE WHEN subscribers.status = 'unsubscribed' THEN subscribers.unsubscribed_at ELSE NULL END,
@@ -183,22 +170,13 @@ async function requestSubscription(email: string, emailOriginal: string, request
 		  AND (subscribers.confirmation_sent_at IS NULL OR subscribers.confirmation_sent_at <= ?)
 		RETURNING email_normalized`,
 	)
-		.bind(
-			email,
-			emailOriginal,
-			env.CONSENT_TEXT_VERSION,
-			nowIso,
-			nowIso,
-			nowIso,
-			tokenHash,
-			expiresAt,
-			new Date(now.getTime() - CONFIRMATION_RESEND_COOLDOWN_MS).toISOString(),
-		)
+		.bind(email, emailOriginal, env.CONSENT_TEXT_VERSION, locale, nowIso, nowIso, nowIso, tokenHash, expiresAt,
+			new Date(now.getTime() - CONFIRMATION_RESEND_COOLDOWN_MS).toISOString())
 		.first<{ email_normalized: string }>();
 
 	if (!claimed) {
 		logEvent("rate_limited", { outcome: "confirmation_cooldown" });
-		return acceptedSubscriptionResponse(request, env);
+		return acceptedSubscriptionResponse(request, env, locale);
 	}
 
 	await env.DB.prepare(
@@ -208,54 +186,40 @@ async function requestSubscription(email: string, emailOriginal: string, request
 		.run();
 
 	try {
-		await sendConfirmationEmail(email, token, env);
+		await sendConfirmationEmail(email, token, locale, env);
 	} catch (error) {
-		logEvent("subscription", {
-			level: "error",
-			outcome: "confirmation_email_failed",
-			errorType: error instanceof Error ? error.name : "UnknownError",
-		});
+		logEvent("subscription", { level: "error", outcome: "confirmation_email_failed", errorType: error instanceof Error ? error.name : "UnknownError" });
 		await env.DB.prepare(
 			"UPDATE subscribers SET confirmation_sent_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, updated_at = ? WHERE email_normalized = ? AND status IN ('pending', 'unsubscribed')",
 		)
 			.bind(new Date().toISOString(), email)
 			.run();
+		if (wantsHtml(request)) return htmlResponse(renderErrorPage(locale), 503, request, env, locale);
 		return jsonResponse({ ok: false, error: "Unable to send confirmation email" }, 503, request, env);
 	}
 
 	logEvent("subscription", { outcome: eventType });
-	return acceptedSubscriptionResponse(request, env);
+	return acceptedSubscriptionResponse(request, env, locale);
 }
 
-async function confirmSubscription(token: string, request: Request, env: Env): Promise<Response> {
-	if (token.length > 512) {
-		logEvent("confirmation", { outcome: "invalid_token" });
-		return textResponse("Invalid or expired confirmation link", 400, request, env);
-	}
+async function confirmSubscription(token: string, request: Request, env: Env, requestedLocale: Locale): Promise<Response> {
+	if (token.length > 512) return invalidConfirmationResponse(request, env, requestedLocale);
 
 	const nowIso = new Date().toISOString();
 	const tokenHash = await sha256Hex(token);
 	const row = await env.DB.prepare(
-		"SELECT email_normalized FROM subscribers WHERE confirmation_token_hash = ? AND status IN ('pending', 'unsubscribed') AND confirmation_expires_at > ?",
+		"SELECT email_normalized, preferred_locale FROM subscribers WHERE confirmation_token_hash = ? AND status IN ('pending', 'unsubscribed') AND confirmation_expires_at > ?",
 	)
 		.bind(tokenHash, nowIso)
-		.first<{ email_normalized: string }>();
-
-	if (!row) {
-		logEvent("confirmation", { outcome: "invalid_token" });
-		return textResponse("Invalid or expired confirmation link", 400, request, env);
-	}
+		.first<{ email_normalized: string; preferred_locale: Locale }>();
+	if (!row) return invalidConfirmationResponse(request, env, requestedLocale);
 
 	const activated = await env.DB.prepare(
 		"UPDATE subscribers SET status = 'active', confirmed_at = ?, unsubscribed_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, confirmation_sent_at = NULL, updated_at = ? WHERE email_normalized = ? AND status IN ('pending', 'unsubscribed') RETURNING email_normalized",
 	)
 		.bind(nowIso, nowIso, row.email_normalized)
 		.first<{ email_normalized: string }>();
-
-	if (!activated) {
-		logEvent("confirmation", { outcome: "invalid_token" });
-		return textResponse("Invalid or expired confirmation link", 400, request, env);
-	}
+	if (!activated) return invalidConfirmationResponse(request, env, requestedLocale);
 
 	await env.DB.prepare(
 		"INSERT INTO subscription_events (email_normalized, event_type, source, occurred_at, consent_text_version) VALUES (?, 'subscribe_confirmed', 'web', ?, ?)",
@@ -264,11 +228,14 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 		.run();
 	logEvent("confirmation", { outcome: "activated" });
 
-	if (wantsHtml(request)) {
-		return htmlResponse(renderConfirmationResult(), 200, request, env);
-	}
-
+	if (wantsHtml(request)) return htmlResponse(renderConfirmationResult(row.preferred_locale), 200, request, env, row.preferred_locale);
 	return jsonResponse({ ok: true, status: "active" }, 200, request, env);
+}
+
+function invalidConfirmationResponse(request: Request, env: Env, locale: Locale): Response {
+	logEvent("confirmation", { outcome: "invalid_token" });
+	if (wantsHtml(request)) return htmlResponse(renderInvalidConfirmation(locale), 400, request, env, locale);
+	return textResponse("Invalid or expired confirmation link", 400, request, env);
 }
 
 async function recordUnsubscribe(email: string, env: Env): Promise<void> {
@@ -276,10 +243,10 @@ async function recordUnsubscribe(email: string, env: Env): Promise<void> {
 	await env.DB.batch([
 		env.DB.prepare(
 			`INSERT INTO subscribers (
-				email_normalized, email_original, status, source, consent_text_version,
+				email_normalized, email_original, status, source, consent_text_version, preferred_locale,
 				requested_at, confirmed_at, unsubscribed_at, confirmation_sent_at,
 				updated_at, confirmation_token_hash, confirmation_expires_at
-			) VALUES (?, ?, 'unsubscribed', 'unsubscribe_link', ?, NULL, NULL, ?, NULL, ?, NULL, NULL)
+			) VALUES (?, ?, 'unsubscribed', 'unsubscribe_link', ?, 'en', NULL, NULL, ?, NULL, ?, NULL, NULL)
 			ON CONFLICT(email_normalized) DO UPDATE SET
 				status = 'unsubscribed',
 				unsubscribed_at = excluded.unsubscribed_at,
@@ -300,24 +267,15 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 		logEvent("export", { outcome: "unauthorized" });
 		return textResponse("Unauthorized", 401, request, env);
 	}
-
-	const result = await env.DB.prepare(
-		"SELECT email_normalized FROM subscribers WHERE status = 'active' ORDER BY email_normalized ASC",
-	).all<{ email_normalized: string }>();
+	const result = await env.DB.prepare("SELECT email_normalized FROM subscribers WHERE status = 'active' ORDER BY email_normalized ASC").all<{ email_normalized: string }>();
 	const emails = result.results.map(row => row.email_normalized);
 	const nowIso = new Date().toISOString();
-
 	await env.DB.prepare(
 		"INSERT INTO subscription_events (email_normalized, event_type, source, occurred_at, metadata_json) VALUES (?, 'csv_exported', 'bulk-email', ?, ?)",
 	)
-		.bind(
-			null,
-			nowIso,
-			JSON.stringify({ rowCount: emails.length }),
-		)
+		.bind(null, nowIso, JSON.stringify({ rowCount: emails.length }))
 		.run()
 		.catch(() => undefined);
-
 	const csv = ["email", ...emails.map(escapeCsv)].join("\r\n") + "\r\n";
 	logEvent("export", { outcome: "completed", rowCount: emails.length });
 	return response(csv, {
@@ -335,93 +293,69 @@ async function exportSuppressed(request: Request, env: Env, url: URL): Promise<R
 		logEvent("suppression", { outcome: "unauthorized" });
 		return textResponse("Unauthorized", 401, request, env);
 	}
-
 	const parsedLimit = Number(url.searchParams.get("limit") ?? "1000");
-	const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
-		? Math.min(Math.floor(parsedLimit), MAX_EXPORT_PAGE_SIZE)
-		: MAX_EXPORT_PAGE_SIZE;
+	const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(Math.floor(parsedLimit), MAX_EXPORT_PAGE_SIZE) : MAX_EXPORT_PAGE_SIZE;
 	const cursor = url.searchParams.get("cursor");
 	const query = cursor
-		? env.DB.prepare(
-				"SELECT email_normalized FROM subscribers WHERE status = 'unsubscribed' AND email_normalized > ? ORDER BY email_normalized ASC LIMIT ?",
-			)
-				.bind(cursor, limit + 1)
-		: env.DB.prepare(
-				"SELECT email_normalized FROM subscribers WHERE status = 'unsubscribed' ORDER BY email_normalized ASC LIMIT ?",
-			)
-				.bind(limit + 1);
+		? env.DB.prepare("SELECT email_normalized FROM subscribers WHERE status = 'unsubscribed' AND email_normalized > ? ORDER BY email_normalized ASC LIMIT ?").bind(cursor, limit + 1)
+		: env.DB.prepare("SELECT email_normalized FROM subscribers WHERE status = 'unsubscribed' ORDER BY email_normalized ASC LIMIT ?").bind(limit + 1);
 	const result = await query.all<{ email_normalized: string }>();
 	const hasNext = result.results.length > limit;
 	const page = hasNext ? result.results.slice(0, limit) : result.results;
 	const nextCursor = hasNext ? page[page.length - 1]?.email_normalized : undefined;
 	logEvent("suppression", { outcome: "completed", rowCount: page.length, done: !hasNext });
-
-	return jsonResponse(
-		{ emails: page.map(row => row.email_normalized), cursor: nextCursor, done: !hasNext },
-		200,
-		request,
-		env,
-	);
+	return jsonResponse({ emails: page.map(row => row.email_normalized), cursor: nextCursor, done: !hasNext }, 200, request, env);
 }
 
-async function sendConfirmationEmail(email: string, token: string, env: Env): Promise<void> {
+async function sendConfirmationEmail(email: string, token: string, locale: Locale, env: Env): Promise<void> {
 	const confirmationUrl = new URL("/subscribe", env.PUBLIC_BASE_URL);
 	confirmationUrl.searchParams.set("token", token);
-	const escapedUrl = escapeHtml(confirmationUrl.toString());
-	const html = `<p>Someone requested to subscribe <strong>${escapeHtml(email)}</strong> to the Hack the Hill email list.</p><p><a href="${escapedUrl}">Confirm subscription</a></p><p>This link expires in 24 hours. If you did not request this, you can ignore this email.</p>`;
-	const text = `Someone requested to subscribe ${email} to the Hack the Hill email list.\n\nConfirm subscription: ${confirmationUrl}\n\nThis link expires in 24 hours. If you did not request this, you can ignore this email.`;
+	confirmationUrl.searchParams.set("lang", locale);
+	const url = confirmationUrl.toString();
+	const copy = locale === "fr"
+		? {
+			subject: "Confirmez votre abonnement aux mises à jour de Hack the Hill",
+			intro: "Une demande d’abonnement aux mises à jour par courriel de Hack the Hill a été reçue.",
+			cta: "Confirmer mon abonnement",
+			expires: "Ce lien expire dans 24 heures.",
+			ignore: "Si vous n’êtes pas à l’origine de cette demande, vous pouvez ignorer ce courriel.",
+			contact: "Hack the Hill est organisé par Capital Technology Network.",
+		}
+		: {
+			subject: "Confirm your Hack the Hill email updates",
+			intro: "A request was received to subscribe to Hack the Hill email updates.",
+			cta: "Confirm my subscription",
+			expires: "This link expires in 24 hours.",
+			ignore: "If you did not request this, you can ignore this email.",
+			contact: "Hack the Hill is organized by Capital Technology Network.",
+		};
+	const escapedUrl = escapeHtml(url);
+	const html = `<!doctype html><html lang="${locale}"><body style="margin:0;background:#f6bc83;font-family:Arial,sans-serif;color:#fff"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f6bc83;padding:24px 12px"><tr><td align="center"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#84010b;border-radius:16px;overflow:hidden"><tr><td style="padding:24px;text-align:center;background:#fff3b6"><img src="https://hackthehill.com/icons/android-chrome-512x512.png" width="96" height="96" alt="Hack the Hill" style="display:block;margin:0 auto;border:0"></td></tr><tr><td style="padding:32px 28px"><p style="margin:0 0 20px;font-size:18px;line-height:1.55">${escapeHtml(copy.intro)}</p><p style="text-align:center;margin:28px 0"><a href="${escapedUrl}" style="display:inline-block;padding:14px 22px;border-radius:16px;background:#fff3b6;color:#84010b;font-weight:bold;text-decoration:none">${escapeHtml(copy.cta)}</a></p><p style="margin:16px 0;font-size:15px;line-height:1.55">${escapeHtml(copy.expires)} ${escapeHtml(copy.ignore)}</p><hr style="border:0;border-top:1px solid #f6bc83;margin:28px 0"><p style="margin:0;font-size:13px;line-height:1.55">${escapeHtml(copy.contact)}<br>info@hackthehill.com<br>0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada</p></td></tr></table></td></tr></table></body></html>`;
+	const text = `${copy.intro}\n\n${copy.cta}: ${url}\n\n${copy.expires} ${copy.ignore}\n\n${copy.contact}\ninfo@hackthehill.com\n0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada`;
 	const from = env.SES_FROM_NAME ? `${env.SES_FROM_NAME} <${env.SES_FROM_EMAIL}>` : env.SES_FROM_EMAIL;
-	const client = new AwsClient({
-		accessKeyId: env.AWS_ACCESS_KEY_ID,
-		secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
-		sessionToken: env.AWS_SESSION_TOKEN,
-		region: env.AWS_REGION,
-		service: "ses",
-	});
-	const response = await client.fetch(`https://email.${env.AWS_REGION}.amazonaws.com/v2/email/outbound-emails`, {
+	const client = new AwsClient({ accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY, sessionToken: env.AWS_SESSION_TOKEN, region: env.AWS_REGION, service: "ses" });
+	const sesResponse = await client.fetch(`https://email.${env.AWS_REGION}.amazonaws.com/v2/email/outbound-emails`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({
 			FromEmailAddress: from,
+			ReplyToAddresses: ["info@hackthehill.com"],
 			Destination: { ToAddresses: [email] },
-			Content: {
-				Simple: {
-					Subject: { Data: "Confirm your Hack the Hill email list subscription", Charset: "UTF-8" },
-					Body: {
-						Html: { Data: html, Charset: "UTF-8" },
-						Text: { Data: text, Charset: "UTF-8" },
-					},
-				},
-			},
+			Content: { Simple: { Subject: { Data: copy.subject, Charset: "UTF-8" }, Body: { Html: { Data: html, Charset: "UTF-8" }, Text: { Data: text, Charset: "UTF-8" } } } },
 			ConfigurationSetName: env.SES_CONFIGURATION_SET,
 		}),
 	});
-
-	if (!response.ok) {
-		const errorBody = (await response.text()).slice(0, 500);
-		throw new Error(`SES returned ${response.status}: ${errorBody}`);
-	}
+	if (!sesResponse.ok) throw new Error(`SES returned ${sesResponse.status}: ${(await sesResponse.text()).slice(0, 500)}`);
 }
 
 async function verifyUnsubscribeToken(token: string, env: Env): Promise<UnsubscribePayload | null> {
-	if (token.length > 2048) {
-		return null;
-	}
-
+	if (token.length > 2048) return null;
 	const [payloadPart, signaturePart, extraPart] = token.split(".");
-	if (!payloadPart || !signaturePart || extraPart) {
-		return null;
-	}
-
-	const secrets = [env.UNSUBSCRIBE_TOKEN_SECRET, env.UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET].filter(
-		(secret): secret is string => Boolean(secret),
-	);
+	if (!payloadPart || !signaturePart || extraPart) return null;
+	const secrets = [env.UNSUBSCRIBE_TOKEN_SECRET, env.UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET].filter((secret): secret is string => Boolean(secret));
 	for (const secret of secrets) {
 		const expected = await hmacBase64Url(payloadPart, secret);
-		if (!(await timingSafeStringEquals(expected, signaturePart))) {
-			continue;
-		}
-
+		if (!(await timingSafeStringEquals(expected, signaturePart))) continue;
 		try {
 			const parsed = JSON.parse(decodeBase64Url(payloadPart)) as { email?: unknown };
 			const email = normalizeEmail(parsed.email);
@@ -430,55 +364,34 @@ async function verifyUnsubscribeToken(token: string, env: Env): Promise<Unsubscr
 			return null;
 		}
 	}
-
 	return null;
 }
 
-async function parseBody(request: Request): Promise<SubscribeBody> {
+async function parseBody(request: Request): Promise<RequestBody> {
 	const contentTypeHeader = request.headers.get("content-type") ?? "";
 	const contentType = contentTypeHeader.split(";", 1)[0].trim().toLowerCase();
 	const body = await readBoundedBody(request, MAX_REQUEST_BODY_BYTES);
 	if (contentType === "application/json") {
 		const value = JSON.parse(new TextDecoder().decode(body)) as unknown;
-		return value && typeof value === "object" ? value as SubscribeBody : {};
+		return value && typeof value === "object" ? value as RequestBody : {};
 	}
-
 	if (contentType === "application/x-www-form-urlencoded" || contentType === "multipart/form-data") {
-		const formRequest = new Request("https://body.invalid/", {
-			method: "POST",
-			headers: { "Content-Type": contentTypeHeader },
-			body,
-		});
+		const formRequest = new Request("https://body.invalid/", { method: "POST", headers: { "Content-Type": contentTypeHeader }, body });
 		const form = await formRequest.formData();
-		return { email: form.get("email"), token: form.get("token"), consent: form.get("consent") };
+		return { email: form.get("email"), token: form.get("token"), lang: form.get("lang") };
 	}
-
 	return {};
 }
 
 function normalizeEmail(value: unknown): string | null {
-	if (typeof value !== "string") {
-		return null;
-	}
-
+	if (typeof value !== "string") return null;
 	const email = value.trim().toLowerCase();
-	if (email.length === 0 || email.length > MAX_EMAIL_LENGTH || email.includes("\n") || email.includes("\r")) {
-		return null;
-	}
-
-	// Deliberately conservative syntax validation; SMTP probing is not performed.
-	if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-		return null;
-	}
-
-	return email;
+	if (email.length === 0 || email.length > MAX_EMAIL_LENGTH || email.includes("\n") || email.includes("\r")) return null;
+	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
 }
 
 function isWithinCooldown(sentAt: string | null | undefined, nowMs: number): boolean {
-	if (!sentAt) {
-		return false;
-	}
-
+	if (!sentAt) return false;
 	const sentMs = Date.parse(sentAt);
 	return Number.isFinite(sentMs) && nowMs - sentMs < CONFIRMATION_RESEND_COOLDOWN_MS;
 }
@@ -495,23 +408,14 @@ async function sha256Hex(value: string): Promise<string> {
 }
 
 async function hmacBase64Url(value: string, secret: string): Promise<string> {
-	const key = await crypto.subtle.importKey(
-		"raw",
-		new TextEncoder().encode(secret),
-		{ name: "HMAC", hash: "SHA-256" },
-		false,
-		["sign"],
-	);
+	const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 	const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
 	return encodeBase64Url(new Uint8Array(signature));
 }
 
 function encodeBase64Url(bytes: Uint8Array): string {
 	let binary = "";
-	for (const byte of bytes) {
-		binary += String.fromCharCode(byte);
-	}
-
+	for (const byte of bytes) binary += String.fromCharCode(byte);
 	return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
 }
 
@@ -535,14 +439,8 @@ function firstString(value: unknown): string | null {
 
 async function readBoundedBody(request: Request, maxBytes: number): Promise<Uint8Array> {
 	const length = Number(request.headers.get("content-length"));
-	if (Number.isFinite(length) && length > maxBytes) {
-		throw new RequestBodyTooLargeError();
-	}
-
-	if (!request.body) {
-		return new Uint8Array();
-	}
-
+	if (Number.isFinite(length) && length > maxBytes) throw new RequestBodyTooLargeError();
+	if (!request.body) return new Uint8Array();
 	const reader = request.body.getReader();
 	const chunks: Uint8Array[] = [];
 	let total = 0;
@@ -551,17 +449,12 @@ async function readBoundedBody(request: Request, maxBytes: number): Promise<Uint
 			const { done, value } = await reader.read();
 			if (done) break;
 			total += value.byteLength;
-			if (total > maxBytes) {
-				throw new RequestBodyTooLargeError();
-			}
+			if (total > maxBytes) throw new RequestBodyTooLargeError();
 			chunks.push(value);
 		}
 	} finally {
-		if (total > maxBytes) {
-			await reader.cancel().catch(() => undefined);
-		}
+		if (total > maxBytes) await reader.cancel().catch(() => undefined);
 	}
-
 	const result = new Uint8Array(total);
 	let offset = 0;
 	for (const chunk of chunks) {
@@ -571,19 +464,10 @@ async function readBoundedBody(request: Request, maxBytes: number): Promise<Uint
 	return result;
 }
 
-function isConsentGiven(value: unknown): boolean {
-	return value === true || value === "true" || value === "yes" || value === "on";
-}
-
 function originalEmail(value: unknown): string | null {
-	if (typeof value !== "string") {
-		return null;
-	}
-
+	if (typeof value !== "string") return null;
 	const email = value.trim();
-	return email.length > 0 && email.length <= MAX_EMAIL_LENGTH && !email.includes("\n") && !email.includes("\r")
-		? email
-		: null;
+	return email.length > 0 && email.length <= MAX_EMAIL_LENGTH && !email.includes("\n") && !email.includes("\r") ? email : null;
 }
 
 function escapeCsv(value: string): string {
@@ -598,61 +482,93 @@ function wantsHtml(request: Request): boolean {
 	return request.headers.get("accept")?.includes("text/html") ?? false;
 }
 
-function renderLayout(title: string, body: string): string {
-	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head><body><main><h1>${escapeHtml(title)}</h1>${body}</main></body></html>`;
+function resolveLocale(value: string | null | undefined, request: Request): Locale {
+	if (value === "fr") return "fr";
+	if (value === "en") return "en";
+	return request.headers.get("accept-language")?.toLowerCase().split(",")[0]?.startsWith("fr") ? "fr" : "en";
 }
 
-function renderSubscribePage(token: string | null): string {
+function localeText(locale: Locale, key: "invalidEmail"): string {
+	return locale === "fr" ? "Veuillez saisir une adresse courriel valide." : "Please enter a valid email address.";
+}
+
+function renderLayout(title: string, body: string, locale: Locale, path: string, query: Record<string, string> = {}): string {
+	const languageLinks = Object.entries({ en: "EN", fr: "FR" }).map(([language, label]) => {
+		const params = new URLSearchParams({ ...query, lang: language });
+		return `<a class="language-link" href="${escapeHtml(`${path}?${params}`)}" aria-current="${language === locale}">${label}</a>`;
+	}).join("");
+	const footer = locale === "fr"
+		? `<p>Hack the Hill est organisé par Capital Technology Network.</p><p><a href="mailto:info@hackthehill.com">info@hackthehill.com</a></p><p>0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada</p><p><a href="${PRIVACY_POLICY_URL}">Politique de confidentialité</a></p>`
+		: `<p>Hack the Hill is organized by Capital Technology Network.</p><p><a href="mailto:info@hackthehill.com">info@hackthehill.com</a></p><p>0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada</p><p><a href="${PRIVACY_POLICY_URL}">Privacy policy</a></p>`;
+	return `<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><link rel="icon" href="${WEBSITE_ORIGIN}/icons/favicon-128.png"><link rel="stylesheet" href="/styles.css"><title>${escapeHtml(title)}</title></head><body><div class="page"><nav class="language-nav" aria-label="Language">${languageLinks}</nav><main class="card"><img class="brand" src="${WEBSITE_ORIGIN}/Logos/hackthehill-banner.svg" alt="Hack the Hill">${body}</main><footer class="footer">${footer}</footer></div></body></html>`;
+}
+
+function renderSubscribePage(token: string | null, locale: Locale, error = "", email = ""): string {
 	if (token) {
-		return renderLayout(
-			"Confirm email list subscription",
-			`<p>Click the button below to confirm your Hack the Hill email list subscription.</p><form method="post" action="/subscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Confirm subscription</button></form>`,
-		);
+		const text = locale === "fr" ? { title: "Confirmez vos mises à jour par courriel", copy: "Confirmez que vous souhaitez recevoir les mises à jour par courriel de Hack the Hill.", button: "Confirmer mon abonnement" } : { title: "Confirm your email updates", copy: "Confirm that you want to receive email updates from Hack the Hill.", button: "Confirm my subscription" };
+		return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><form class="form" method="post" action="/subscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><input type="hidden" name="lang" value="${locale}"><button class="button" type="submit">${text.button}</button></form>`, locale, "/subscribe", { token });
 	}
-
-	return renderLayout(
-		"Hack the Hill email list",
-		`<form method="post" action="/subscribe"><label for="email">Email address</label><input id="email" name="email" type="email" autocomplete="email" required maxlength="254"><p>Hack the Hill will use this address to send email list updates. You can unsubscribe at any time.</p><label><input name="consent" type="checkbox" value="yes" required>I agree to receive the Hack the Hill email list.</label><p>We will send a confirmation email before adding you to the email list.</p><button type="submit">Subscribe</button></form>`,
-	);
+	const text = locale === "fr"
+		? { title: "Restez au courant", description: "Recevez occasionnellement par courriel les annonces, les nouvelles et les occasions de Hack the Hill.", label: "Adresse courriel", supporting: "Vous pouvez vous désabonner en tout temps.", confirmation: "Nous vous enverrons un courriel pour confirmer votre adresse.", button: "S’abonner aux mises à jour" }
+		: { title: "Stay in the loop", description: "Get occasional Hack the Hill announcements, news, and opportunities by email.", label: "Email address", supporting: "You can unsubscribe at any time.", confirmation: "We’ll send you an email to confirm your address.", button: "Subscribe to updates" };
+	const errorHtml = error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : "";
+	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.description}</p>${errorHtml}<form class="form" method="post" action="/subscribe"><label class="label" for="email">${text.label}</label><input class="input" id="email" name="email" type="email" inputmode="email" autocomplete="email" required maxlength="254" value="${escapeHtml(email)}"><p class="notice">${text.supporting}</p><p class="notice">${text.confirmation}</p><input type="hidden" name="lang" value="${locale}"><button class="button" type="submit">${text.button}</button></form>`, locale, "/subscribe");
 }
 
-function renderConfirmationResult(): string {
-	return renderLayout("Subscription confirmed", "<p>You are now subscribed to the Hack the Hill email list.</p>");
+function renderConfirmationResult(locale: Locale): string {
+	const text = locale === "fr" ? { title: "Votre abonnement est confirmé", copy: "Vous recevrez maintenant les mises à jour par courriel de Hack the Hill.", link: "Visiter hackthehill.com" } : { title: "You’re subscribed", copy: "You’ll now receive occasional email updates from Hack the Hill.", link: "Visit hackthehill.com" };
+	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p><a class="button" href="${WEBSITE_ORIGIN}">${text.link}</a></p>`, locale, "/subscribe");
 }
 
-function renderUnsubscribePage(valid: boolean, token = ""): string {
+function renderInvalidConfirmation(locale: Locale): string {
+	const text = locale === "fr" ? { title: "Lien de confirmation invalide", copy: "Ce lien de confirmation est invalide ou a expiré.", link: "Recommencer" } : { title: "Invalid confirmation link", copy: "This confirmation link is invalid or has expired.", link: "Start again" };
+	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p><a class="button" href="/subscribe?lang=${locale}">${text.link}</a></p>`, locale, "/subscribe");
+}
+
+function renderUnsubscribePage(valid: boolean, token: string, locale: Locale): string {
 	if (!valid) {
-		return renderLayout("Invalid unsubscribe link", "<p>This unsubscribe link is invalid or has expired.</p>");
+		const text = locale === "fr" ? { title: "Lien de désabonnement invalide", copy: "Ce lien de désabonnement est invalide.", link: "S’abonner aux mises à jour" } : { title: "Invalid unsubscribe link", copy: "This unsubscribe link is invalid.", link: "Subscribe to updates" };
+		return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><p><a class="button" href="/subscribe?lang=${locale}">${text.link}</a></p>`, locale, "/unsubscribe");
 	}
-
-	return renderLayout(
-		"Unsubscribe from the email list",
-		`<p>Click the button below to stop receiving future Hack the Hill email list emails.</p><form method="post" action="/unsubscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><button type="submit">Unsubscribe</button></form><p>Your email client may submit this request automatically through its one-click unsubscribe feature.</p>`,
-	);
+	const text = locale === "fr" ? { title: "Se désabonner des mises à jour de Hack the Hill", copy: "Vous cesserez de recevoir les annonces, les nouvelles et les occasions de Hack the Hill à cette adresse.", button: "Se désabonner" } : { title: "Unsubscribe from Hack the Hill updates", copy: "You’ll stop receiving Hack the Hill announcements, news, and opportunities at this address.", button: "Unsubscribe" };
+	return renderLayout(text.title, `<h1>${text.title}</h1><p class="lede">${text.copy}</p><form class="form" method="post" action="/unsubscribe"><input type="hidden" name="token" value="${escapeHtml(token)}"><input type="hidden" name="lang" value="${locale}"><button class="button button-secondary" type="submit">${text.button}</button></form>`, locale, "/unsubscribe", { token });
 }
 
-function acceptedSubscriptionResponse(request: Request, env: Env): Response {
+function acceptedSubscriptionResponse(request: Request, env: Env, locale: Locale): Response {
 	if (wantsHtml(request)) {
-		return htmlResponse(renderLayout("Check your email", "<p>If a confirmation message was requested, it will arrive shortly. If you already confirmed this address, no further action is needed.</p>"), 202, request, env);
+		const copy = locale === "fr" ? { title: "Consultez votre boîte de réception", text: "Nous avons reçu votre demande. Si une confirmation est nécessaire, un courriel arrivera bientôt. Si cette adresse est déjà abonnée, aucune autre action n’est requise." } : { title: "Check your inbox", text: "We’ve received your request. If confirmation is needed, an email will arrive shortly. If this address is already subscribed, you’re all set." };
+		return htmlResponse(renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p>`, locale, "/subscribe"), 202, request, env, locale);
 	}
-
 	return jsonResponse({ ok: true, status: "accepted" }, 202, request, env);
 }
 
-function unsubscribeResponse(request: Request, env: Env): Response {
+function unsubscribeResponse(request: Request, env: Env, locale: Locale): Response {
 	if (wantsHtml(request)) {
-		return htmlResponse(renderLayout("Unsubscribed", "<p>You have been unsubscribed from future Hack the Hill email list emails.</p>"), 200, request, env);
+		const copy = locale === "fr" ? { title: "Vous êtes désabonné", text: "Vous ne recevrez plus les mises à jour par courriel de Hack the Hill.", link: "S’abonner à nouveau" } : { title: "You’re unsubscribed", text: "You won’t receive future Hack the Hill email updates.", link: "Subscribe again" };
+		return htmlResponse(renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p><p><a class="button" href="/subscribe?lang=${locale}">${copy.link}</a></p>`, locale, "/unsubscribe"), 200, request, env, locale);
 	}
-
 	return textResponse("ok", 200, request, env);
 }
 
-function response(body: BodyInit | null, init: ResponseInit, request: Request, env: Env): Response {
+function renderErrorPage(locale: Locale): string {
+	const copy = locale === "fr" ? { title: "Une erreur s’est produite", text: "Veuillez réessayer plus tard." } : { title: "Something went wrong", text: "Please try again later." };
+	return renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p>`, locale, "/subscribe");
+}
+
+function renderRequestTooLargePage(locale: Locale): string {
+	const copy = locale === "fr"
+		? { title: "Demande trop volumineuse", text: "Votre demande est trop volumineuse. Veuillez réessayer avec une adresse courriel seulement." }
+		: { title: "Request too large", text: "Your request is too large. Please try again with an email address only." };
+	return renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p>`, locale, "/subscribe");
+}
+
+function response(body: BodyInit | null, init: ResponseInit, request: Request, env: Env, locale?: Locale): Response {
 	const headers = new Headers(init.headers);
-	headers.set("Content-Security-Policy", "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+	headers.set("Content-Security-Policy", "default-src 'none'; style-src 'self'; font-src https://hackthehill.com; img-src https://hackthehill.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
 	headers.set("X-Content-Type-Options", "nosniff");
 	headers.set("Referrer-Policy", "no-referrer");
 	headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
+	if (locale) headers.set("Content-Language", locale);
 	const origin = request.headers.get("origin");
 	if (origin && allowedOrigins(env).has(origin)) {
 		headers.set("Access-Control-Allow-Origin", origin);
@@ -672,8 +588,8 @@ function jsonResponse(payload: unknown, status: number, request: Request, env: E
 	return response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" } }, request, env);
 }
 
-function htmlResponse(html: string, status: number, request: Request, env: Env): Response {
-	return response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } }, request, env);
+function htmlResponse(html: string, status: number, request: Request, env: Env, locale?: Locale): Response {
+	return response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } }, request, env, locale);
 }
 
 function textResponse(text: string, status: number, request: Request, env: Env): Response {
@@ -686,9 +602,6 @@ function methodNotAllowed(allow: string, request: Request, env: Env): Response {
 
 function logEvent(event: string, fields: Record<string, string | number | boolean> = {}): void {
 	const payload = { event, ...fields };
-	if (fields.level === "error") {
-		console.error(JSON.stringify(payload));
-		return;
-	}
-	console.log(JSON.stringify(payload));
+	if (fields.level === "error") console.error(JSON.stringify(payload));
+	else console.log(JSON.stringify(payload));
 }

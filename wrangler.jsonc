@@ -10,6 +10,9 @@
 			"zone_name": "hackthehill.com"
 		}
 	],
+	"assets": {
+		"directory": "./public"
+	},
 	"d1_databases": [
 		{
 			"binding": "DB",
@@ -23,7 +26,7 @@
 	},
 	"vars": {
 		"PUBLIC_BASE_URL": "https://emails.hackthehill.com",
-		"CONSENT_TEXT_VERSION": "email-list-v1",
+		"CONSENT_TEXT_VERSION": "email-updates-v2",
 		"ALLOWED_ORIGINS": "https://hackthehill.com,https://www.hackthehill.com"
 	}
 }

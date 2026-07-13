@@ -2,6 +2,9 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "email-list-manager-test",
 	"main": "src/index.ts",
+	"assets": {
+		"directory": "./public"
+	},
 	"compatibility_date": "2026-07-12",
 	"d1_databases": [
 		{
@@ -13,7 +16,7 @@
 	],
 	"vars": {
 		"PUBLIC_BASE_URL": "https://emails.hackthehill.com",
-		"CONSENT_TEXT_VERSION": "email-list-v1",
+		"CONSENT_TEXT_VERSION": "email-updates-v2",
 		"ALLOWED_ORIGINS": "https://hackthehill.com",
 		"EXPORT_TOKEN": "export-token",
 		"SUPPRESSION_READ_TOKEN": "suppression-token",

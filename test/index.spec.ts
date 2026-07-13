@@ -2,6 +2,8 @@ import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 const unsubscribeSecret = "unsubscribe-secret";
+// Keep the test schema in lockstep with the checked-in migrations, including
+// the additive locale migration used by production.
 const migrations = [{
 	name: "0001_initial",
 	queries: [
@@ -11,6 +13,9 @@ const migrations = [{
 		"CREATE TABLE IF NOT EXISTS subscription_events (id INTEGER PRIMARY KEY AUTOINCREMENT, email_normalized TEXT, event_type TEXT NOT NULL, source TEXT NOT NULL, occurred_at TEXT NOT NULL, consent_text_version TEXT, metadata_json TEXT, FOREIGN KEY (email_normalized) REFERENCES subscribers(email_normalized))",
 		"CREATE INDEX IF NOT EXISTS subscription_events_email_time ON subscription_events (email_normalized, occurred_at)",
 	],
+}, {
+	name: "0002_preferred_locale",
+	queries: ["ALTER TABLE subscribers ADD COLUMN preferred_locale TEXT NOT NULL DEFAULT 'en' CHECK (preferred_locale IN ('en', 'fr'))"],
 }];
 
 beforeAll(async () => {
@@ -60,27 +65,65 @@ describe("email list subscription service", () => {
 		});
 
 		expect(response.status).toBe(200);
-		expect(await response.text()).toContain("Unsubscribed");
+		expect(await response.text()).toContain("You’re unsubscribed");
 		const row = await env.DB.prepare("SELECT status FROM subscribers WHERE email_normalized = ?")
 			.bind("form@example.com")
 			.first<{ status: string }>();
 		expect(row?.status).toBe("unsubscribed");
 	});
 
-	it("accepts consent from the browser subscribe form", async () => {
+	it("accepts a browser subscribe form without a consent checkbox", async () => {
 		await seedSubscriber("member@example.com", "active");
 		const response = await SELF.fetch("https://emails.hackthehill.com/subscribe", {
 			method: "POST",
 			headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "text/html" },
-			body: new URLSearchParams({ email: "member@example.com", consent: "yes" }),
+			body: new URLSearchParams({ email: "member@example.com" }),
 		});
 
 		expect(response.status).toBe(202);
-		expect(await response.text()).toContain("Check your email");
+		expect(await response.text()).toContain("Check your inbox");
+	});
+
+	it("renders the branded English and French subscribe pages without consent controls", async () => {
+		const english = await SELF.fetch("https://emails.hackthehill.com/subscribe", { headers: { Accept: "text/html" } });
+		const englishHtml = await english.text();
+		expect(englishHtml).toContain("Stay in the loop");
+		expect(englishHtml).toContain("Get occasional Hack the Hill announcements, news, and opportunities by email.");
+		expect(englishHtml).toContain("https://hackthehill.com/Logos/hackthehill-banner.svg");
+		expect(englishHtml).toContain("/styles.css");
+		expect(englishHtml).not.toContain('type="checkbox"');
+		expect(englishHtml).not.toContain("consent");
+		expect(english.headers.get("Content-Language")).toBe("en");
+
+		const french = await SELF.fetch("https://emails.hackthehill.com/subscribe", {
+			headers: { Accept: "text/html", "Accept-Language": "fr-CA,fr;q=0.9" },
+		});
+		const frenchHtml = await french.text();
+		expect(frenchHtml).toContain("Restez au courant");
+		expect(frenchHtml).toContain("Recevez occasionnellement par courriel les annonces, les nouvelles et les occasions de Hack the Hill.");
+		expect(french.headers.get("Content-Language")).toBe("fr");
+	});
+
+	it("rejects legacy t token parameters", async () => {
+		const subscribe = await SELF.fetch("https://emails.hackthehill.com/subscribe?t=not-supported", { headers: { Accept: "text/html" } });
+		expect(await subscribe.text()).not.toContain('name="token"');
+		const unsubscribe = await SELF.fetch("https://emails.hackthehill.com/unsubscribe?t=not-supported", { headers: { Accept: "text/html" } });
+		expect(unsubscribe.status).toBe(400);
+	});
+
+	it("returns styled browser validation errors", async () => {
+		const response = await SELF.fetch("https://emails.hackthehill.com/subscribe", {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "text/html" },
+			body: new URLSearchParams({ email: "not-an-email", lang: "fr" }),
+		});
+		expect(response.status).toBe(400);
+		expect(response.headers.get("Content-Type")).toContain("text/html");
+		expect(await response.text()).toContain("Veuillez saisir une adresse courriel valide.");
 	});
 
 	it("rejects a streamed body after it exceeds the byte limit", async () => {
-		const oversized = JSON.stringify({ email: `${"a".repeat(17_000)}@example.com`, consent: true });
+		const oversized = JSON.stringify({ email: `${"a".repeat(17_000)}@example.com` });
 		const body = new ReadableStream<Uint8Array>({
 			start(controller) {
 				controller.enqueue(new TextEncoder().encode(oversized.slice(0, 8_000)));
@@ -96,6 +139,14 @@ describe("email list subscription service", () => {
 
 		const response = await SELF.fetch(request);
 		expect(response.status).toBe(413);
+
+		const browserResponse = await SELF.fetch(new Request("https://emails.hackthehill.com/subscribe", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Accept: "text/html" },
+			body: oversized,
+		}));
+		expect(browserResponse.headers.get("Content-Type")).toContain("text/html");
+		expect(await browserResponse.text()).toContain("Request too large");
 	});
 
 	it("requires export authentication and returns only active addresses", async () => {
@@ -136,6 +187,20 @@ describe("email list subscription service", () => {
 			.bind("confirm@example.com")
 			.first<{ status: string }>();
 		expect(row?.status).toBe("active");
+	});
+
+	it("uses the stored locale for confirmation success and keeps resubscribe fresh", async () => {
+		const token = "confirmation-fr-token";
+		await seedPending("fr@example.com", await sha256Hex(token), null, "pending", "fr");
+		const response = await SELF.fetch(`https://emails.hackthehill.com/subscribe?token=${token}`, {
+			method: "POST",
+			headers: { Accept: "text/html" },
+		});
+		const html = await response.text();
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Content-Language")).toBe("fr");
+		expect(html).toContain("Votre abonnement est confirmé");
+		expect(html).not.toContain("Subscribe again");
 	});
 
 	it("clears stale unsubscribe metadata when a resubscription is confirmed", async () => {
@@ -183,6 +248,9 @@ describe("email list subscription service", () => {
 		]) {
 			const response = await SELF.fetch(url, { headers: { Accept: "text/html" } });
 			expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+			expect(response.headers.get("Content-Security-Policy")).toContain("style-src 'self'");
+			expect(response.headers.get("Content-Security-Policy")).toContain("font-src https://hackthehill.com");
+			expect(response.headers.get("Content-Security-Policy")).toContain("img-src https://hackthehill.com");
 			expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
 			expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
 			expect(response.headers.get("Permissions-Policy")).toContain("camera=()");
@@ -196,8 +264,8 @@ async function seedSubscriber(email: string, status: "active" | "pending" | "uns
 		`INSERT INTO subscribers (
 			email_normalized, email_original, status, source, consent_text_version,
 			requested_at, confirmed_at, unsubscribed_at, confirmation_sent_at,
-			updated_at, confirmation_token_hash, confirmation_expires_at
-		) VALUES (?, ?, ?, 'test', 'test', ?, ?, ?, NULL, ?, NULL, NULL)`,
+			updated_at, confirmation_token_hash, confirmation_expires_at, preferred_locale
+		) VALUES (?, ?, ?, 'test', 'test', ?, ?, ?, NULL, ?, NULL, NULL, 'en')`,
 	)
 		.bind(email, email, status, now, status === "active" ? now : null, status === "unsubscribed" ? now : null, now)
 		.run();
@@ -208,16 +276,17 @@ async function seedPending(
 	tokenHash: string,
 	unsubscribedAt: string | null = null,
 	status: "pending" | "unsubscribed" = "pending",
+	locale: "en" | "fr" = "en",
 ): Promise<void> {
 	const now = new Date();
 	await env.DB.prepare(
 		`INSERT INTO subscribers (
 			email_normalized, email_original, status, source, consent_text_version,
 			requested_at, confirmed_at, unsubscribed_at, confirmation_sent_at,
-			updated_at, confirmation_token_hash, confirmation_expires_at
-		) VALUES (?, ?, ?, 'test', 'test', ?, NULL, ?, ?, ?, ?, ?)`,
+			updated_at, confirmation_token_hash, confirmation_expires_at, preferred_locale
+		) VALUES (?, ?, ?, 'test', 'test', ?, NULL, ?, ?, ?, ?, ?, ?)`,
 	)
-		.bind(email, email, status, now.toISOString(), unsubscribedAt, now.toISOString(), now.toISOString(), tokenHash, new Date(now.getTime() + 60_000).toISOString())
+		.bind(email, email, status, now.toISOString(), unsubscribedAt, now.toISOString(), now.toISOString(), tokenHash, new Date(now.getTime() + 60_000).toISOString(), locale)
 		.run();
 }
 

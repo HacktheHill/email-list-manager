@@ -1,6 +1,6 @@
-# Hack the Hill email list service
+# Hack the Hill email updates service
 
-This repository contains the standalone subscription service for the Hack the Hill email list. It is a Cloudflare Worker backed by D1. D1 is the source of truth; the CSV endpoint is an authenticated campaign snapshot for [`bulk-email`](https://github.com/HacktheHill/bulk-email).
+This repository contains the standalone subscription service for Hack the Hill email updates. It is a Cloudflare Worker backed by D1. D1 is the source of truth; the CSV endpoint is an authenticated campaign snapshot for [`bulk-email`](https://github.com/HacktheHill/bulk-email).
 
 ## Routes
 
@@ -16,10 +16,10 @@ POST https://emails.hackthehill.com/subscribe
 The POST body can be JSON or form data:
 
 ```json
-{ "email": "person@example.com", "consent": true }
+{ "email": "person@example.com", "lang": "en" }
 ```
 
-The service uses double opt-in. The address is not exported until the confirmation link has been opened and submitted.
+The service uses double opt-in. The address is not exported until the confirmation link has been opened and submitted. `lang` may be `en` or `fr` and is retained for confirmation messages and result pages.
 
 To confirm a request, POST the token from the confirmation URL:
 
@@ -34,7 +34,7 @@ GET  https://emails.hackthehill.com/unsubscribe?token=...
 POST https://emails.hackthehill.com/unsubscribe?token=...
 ```
 
-`POST` also accepts the RFC 8058 `List-Unsubscribe=One-Click` request. The legacy `?t=` query parameter remains accepted for old messages.
+`POST` also accepts the RFC 8058 `List-Unsubscribe=One-Click` request. `token` is the only supported signed-token parameter.
 
 ### Authenticated CSV export
 
@@ -82,7 +82,7 @@ The production Worker and D1 database are already deployed. The SES DNS records 
    npx wrangler secret put SES_CONFIGURATION_SET
    ```
 
- `AWS_ACCESS_KEY_ID` should belong to an IAM principal restricted to sending from the email list identity. Add `AWS_SESSION_TOKEN` only when using temporary credentials.
+ `AWS_ACCESS_KEY_ID` should belong to an IAM principal restricted to sending from the Hack the Hill sender identity. Add `AWS_SESSION_TOKEN` only when using temporary credentials.
 
 5. Set `UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET` during signing-key rotation and remove it after all old messages have aged out.
 6. Configure Cloudflare rate limiting for subscription POSTs by source IP and enable Worker observability.
@@ -131,7 +131,7 @@ npm test
 npm run dev
 ```
 
-The test Worker uses a local D1 database and covers browser GET safety, one-click unsubscribe, confirmation, authenticated export, and suppression pagination.
+The test Worker uses a local D1 database with the production schema (including the locale migration) and covers browser GET safety, one-click unsubscribe, confirmation, localized pages, authenticated export, and suppression pagination.
 
 ## Migration
 
@@ -139,7 +139,7 @@ Before production cutover:
 
 1. Export the existing Google Sheet.
 2. Import valid Sheet addresses as `active`.
-3. Update `bulk-email` to use the new export and unsubscribe URLs.
+3. Update `bulk-email` to use the new export and canonical `token` unsubscribe URLs.
 
 Legacy suppressions from the previous system are intentionally not part of this list.
 
