@@ -270,7 +270,7 @@ async function recordUnsubscribe(email: string, env: Env): Promise<void> {
 }
 
 async function exportCsv(request: Request, env: Env): Promise<Response> {
-	if (!constantTimeEquals(request.headers.get("authorization") ?? "", `Bearer ${env.EXPORT_TOKEN}`)) {
+	if (!(await timingSafeStringEquals(request.headers.get("authorization") ?? "", `Bearer ${env.EXPORT_TOKEN}`))) {
 		return textResponse("Unauthorized", 401, request, env);
 	}
 
@@ -303,7 +303,7 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 }
 
 async function exportSuppressed(request: Request, env: Env, url: URL): Promise<Response> {
-	if (!constantTimeEquals(request.headers.get("authorization") ?? "", `Bearer ${env.SUPPRESSION_READ_TOKEN}`)) {
+	if (!(await timingSafeStringEquals(request.headers.get("authorization") ?? "", `Bearer ${env.SUPPRESSION_READ_TOKEN}`))) {
 		return textResponse("Unauthorized", 401, request, env);
 	}
 
@@ -388,7 +388,7 @@ async function verifyUnsubscribeToken(token: string, env: Env): Promise<Unsubscr
 	);
 	for (const secret of secrets) {
 		const expected = await hmacBase64Url(payloadPart, secret);
-		if (!constantTimeEquals(expected, signaturePart)) {
+		if (!(await timingSafeStringEquals(expected, signaturePart))) {
 			continue;
 		}
 
@@ -491,16 +491,12 @@ function decodeBase64Url(value: string): string {
 	return new TextDecoder().decode(Uint8Array.from(atob(padded), character => character.charCodeAt(0)));
 }
 
-function constantTimeEquals(a: string, b: string): boolean {
-	if (a.length !== b.length) {
-		return false;
-	}
-
-	let mismatch = 0;
-	for (let index = 0; index < a.length; index++) {
-		mismatch |= a.charCodeAt(index) ^ b.charCodeAt(index);
-	}
-	return mismatch === 0;
+async function timingSafeStringEquals(a: string, b: string): Promise<boolean> {
+	const [aDigest, bDigest] = await Promise.all([
+		crypto.subtle.digest("SHA-256", new TextEncoder().encode(a)),
+		crypto.subtle.digest("SHA-256", new TextEncoder().encode(b)),
+	]);
+	return crypto.subtle.timingSafeEqual(aDigest, bDigest);
 }
 
 function firstString(value: unknown): string | null {
@@ -623,6 +619,10 @@ function unsubscribeResponse(request: Request, env: Env): Response {
 
 function response(body: BodyInit | null, init: ResponseInit, request: Request, env: Env): Response {
 	const headers = new Headers(init.headers);
+	headers.set("Content-Security-Policy", "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
+	headers.set("X-Content-Type-Options", "nosniff");
+	headers.set("Referrer-Policy", "no-referrer");
+	headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
 	const origin = request.headers.get("origin");
 	if (origin && allowedOrigins(env).has(origin)) {
 		headers.set("Access-Control-Allow-Origin", origin);

@@ -164,6 +164,24 @@ describe("email list subscription service", () => {
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual({ emails: ["a@example.com"], cursor: "a@example.com", done: false });
 	});
+
+	it("requires suppression authentication", async () => {
+		const response = await SELF.fetch("https://emails.hackthehill.com/unsubscribe?suppressed=1");
+		expect(response.status).toBe(401);
+	});
+
+	it("adds restrictive security headers to HTML and API responses", async () => {
+		for (const url of [
+			"https://emails.hackthehill.com/subscribe",
+			"https://emails.hackthehill.com/unsubscribe",
+		]) {
+			const response = await SELF.fetch(url, { headers: { Accept: "text/html" } });
+			expect(response.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+			expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+			expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+			expect(response.headers.get("Permissions-Policy")).toContain("camera=()");
+		}
+	});
 });
 
 async function seedSubscriber(email: string, status: "active" | "pending" | "unsubscribed"): Promise<void> {
