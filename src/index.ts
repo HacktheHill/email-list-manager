@@ -158,6 +158,7 @@ async function requestSubscription(email: string, emailOriginal: string, request
 			consent_text_version = excluded.consent_text_version,
 			requested_at = excluded.requested_at,
 			confirmed_at = NULL,
+			unsubscribed_at = NULL,
 			confirmation_sent_at = excluded.confirmation_sent_at,
 			updated_at = excluded.updated_at,
 			confirmation_token_hash = excluded.confirmation_token_hash,
@@ -222,7 +223,7 @@ async function confirmSubscription(token: string, request: Request, env: Env): P
 	}
 
 	const activated = await env.DB.prepare(
-		"UPDATE subscribers SET status = 'active', confirmed_at = ?, confirmation_token_hash = NULL, confirmation_expires_at = NULL, confirmation_sent_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending' RETURNING email_normalized",
+		"UPDATE subscribers SET status = 'active', confirmed_at = ?, unsubscribed_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, confirmation_sent_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending' RETURNING email_normalized",
 	)
 		.bind(nowIso, nowIso, row.email_normalized)
 		.first<{ email_normalized: string }>();

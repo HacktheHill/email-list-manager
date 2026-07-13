@@ -138,6 +138,23 @@ describe("email list subscription service", () => {
 		expect(row?.status).toBe("active");
 	});
 
+	it("clears stale unsubscribe metadata when a resubscription is confirmed", async () => {
+		const token = "resubscribe-token";
+		await seedPending("returning@example.com", await sha256Hex(token), new Date(0).toISOString());
+
+		const response = await SELF.fetch(`https://emails.hackthehill.com/subscribe?token=${token}`, {
+			method: "POST",
+		});
+
+		expect(response.status).toBe(200);
+		const row = await env.DB.prepare(
+			"SELECT status, unsubscribed_at FROM subscribers WHERE email_normalized = ?",
+		)
+			.bind("returning@example.com")
+			.first<{ status: string; unsubscribed_at: string | null }>();
+		expect(row).toEqual({ status: "active", unsubscribed_at: null });
+	});
+
 	it("supports the existing sender's suppressed-list pagination endpoint", async () => {
 		await seedSubscriber("a@example.com", "unsubscribed");
 		await seedSubscriber("b@example.com", "unsubscribed");
@@ -162,16 +179,16 @@ async function seedSubscriber(email: string, status: "active" | "pending" | "uns
 		.run();
 }
 
-async function seedPending(email: string, tokenHash: string): Promise<void> {
+async function seedPending(email: string, tokenHash: string, unsubscribedAt: string | null = null): Promise<void> {
 	const now = new Date();
 	await env.DB.prepare(
 		`INSERT INTO subscribers (
 			email_normalized, email_original, status, source, consent_text_version,
 			requested_at, confirmed_at, unsubscribed_at, confirmation_sent_at,
 			updated_at, confirmation_token_hash, confirmation_expires_at
-		) VALUES (?, ?, 'pending', 'test', 'test', ?, NULL, NULL, ?, ?, ?, ?)`,
+		) VALUES (?, ?, 'pending', 'test', 'test', ?, NULL, ?, ?, ?, ?, ?)`,
 	)
-		.bind(email, email, now.toISOString(), now.toISOString(), now.toISOString(), tokenHash, new Date(now.getTime() + 60_000).toISOString())
+		.bind(email, email, now.toISOString(), unsubscribedAt, now.toISOString(), now.toISOString(), tokenHash, new Date(now.getTime() + 60_000).toISOString())
 		.run();
 }
 
