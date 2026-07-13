@@ -52,7 +52,7 @@ export default {
 			logEvent("request_failed", {
 				level: "error",
 				path: url.pathname,
-				error: error instanceof Error ? error.message : String(error),
+				errorType: error instanceof Error ? error.name : "UnknownError",
 			});
 			return jsonResponse({ ok: false, error: "Service temporarily unavailable" }, 503, request, env);
 		}
@@ -213,7 +213,7 @@ async function requestSubscription(email: string, emailOriginal: string, request
 		logEvent("subscription", {
 			level: "error",
 			outcome: "confirmation_email_failed",
-			error: error instanceof Error ? error.message : String(error),
+			errorType: error instanceof Error ? error.name : "UnknownError",
 		});
 		await env.DB.prepare(
 			"UPDATE subscribers SET confirmation_sent_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, updated_at = ? WHERE email_normalized = ? AND status = 'pending'",
