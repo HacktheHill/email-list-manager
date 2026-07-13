@@ -22,20 +22,11 @@
 		}
 	],
 	"observability": {
-		"enabled": true,
-		"logs": {
-			"enabled": true,
-			"head_sampling_rate": 1,
-			"invocation_logs": true
-		},
-		"traces": {
-			"enabled": false,
-			"head_sampling_rate": 0
-		}
+		"enabled": true
 	},
 	"vars": {
 		"PUBLIC_BASE_URL": "https://emails.hackthehill.com",
 		"CONSENT_TEXT_VERSION": "email-updates-v2",
-		"ALLOWED_ORIGINS": "https://hackthehill.com,https://www.hackthehill.com,https://*.website-1cg.pages.dev"
+		"ALLOWED_ORIGINS": "https://hackthehill.com,https://www.hackthehill.com"
 	}
 }
