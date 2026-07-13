@@ -570,7 +570,7 @@ function response(body: BodyInit | null, init: ResponseInit, request: Request, e
 	headers.set("Permissions-Policy", "camera=(), geolocation=(), microphone=()");
 	if (locale) headers.set("Content-Language", locale);
 	const origin = request.headers.get("origin");
-	if (origin && allowedOrigins(env).has(origin)) {
+	if (origin && isAllowedOrigin(origin, env)) {
 		headers.set("Access-Control-Allow-Origin", origin);
 		headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
 		headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -582,6 +582,25 @@ function response(body: BodyInit | null, init: ResponseInit, request: Request, e
 
 function allowedOrigins(env: Env): Set<string> {
 	return new Set((env.ALLOWED_ORIGINS ?? "").split(",").map(origin => origin.trim()).filter(Boolean));
+}
+
+function isAllowedOrigin(origin: string, env: Env): boolean {
+	const origins = allowedOrigins(env);
+	if (origins.has(origin)) return true;
+
+	let url: URL;
+	try {
+		url = new URL(origin);
+	} catch {
+		return false;
+	}
+
+	if (url.protocol !== "https:" || url.port || url.origin !== origin) return false;
+
+	return [...origins].some(pattern => {
+		const match = /^https:\/\/\*\.([a-z0-9.-]+)$/i.exec(pattern);
+		return Boolean(match?.[1] && url.hostname.endsWith(`.${match[1].toLowerCase()}`));
+	});
 }
 
 function jsonResponse(payload: unknown, status: number, request: Request, env: Env): Response {

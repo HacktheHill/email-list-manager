@@ -17,7 +17,7 @@
 	"vars": {
 		"PUBLIC_BASE_URL": "https://emails.hackthehill.com",
 		"CONSENT_TEXT_VERSION": "email-updates-v2",
-		"ALLOWED_ORIGINS": "https://hackthehill.com",
+		"ALLOWED_ORIGINS": "https://hackthehill.com,https://*.website-1cg.pages.dev",
 		"EXPORT_TOKEN": "export-token",
 		"SUPPRESSION_READ_TOKEN": "suppression-token",
 		"UNSUBSCRIBE_TOKEN_SECRET": "unsubscribe-secret",
