@@ -47,7 +47,7 @@ curl \
   'https://emails.hackthehill.com/subscribe?export=csv'
 ```
 
-The response contains only confirmed active addresses and is marked `no-store`.
+The response contains only confirmed active addresses and their `en`/`fr` preferred language in `email,language` columns. It is marked `no-store`.
 
 The sender’s migration-compatible suppression endpoint is:
 
@@ -73,7 +73,8 @@ The production Worker and D1 database are already deployed. The SES DNS records 
    ```bash
    npx wrangler secret put EXPORT_TOKEN
    npx wrangler secret put SUPPRESSION_READ_TOKEN
-   npx wrangler secret put UNSUBSCRIBE_TOKEN_SECRET
+   npx wrangler secret put UNSUBSCRIBE_TOKEN_ACTIVE_KEY_ID
+   npx wrangler secret put UNSUBSCRIBE_TOKEN_KEYS
    npx wrangler secret put AWS_ACCESS_KEY_ID
    npx wrangler secret put AWS_SECRET_ACCESS_KEY
    npx wrangler secret put AWS_REGION
@@ -84,7 +85,7 @@ The production Worker and D1 database are already deployed. The SES DNS records 
 
  `AWS_ACCESS_KEY_ID` should belong to an IAM principal restricted to sending from the Hack the Hill sender identity. Add `AWS_SESSION_TOKEN` only when using temporary credentials.
 
-5. Set `UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET` during signing-key rotation and remove it after all old messages have aged out.
+5. Store unsubscribe keys as a JSON object in `UNSUBSCRIBE_TOKEN_KEYS`, select the signing key with `UNSUBSCRIBE_TOKEN_ACTIVE_KEY_ID`, and retain old entries for every link that must continue working. `UNSUBSCRIBE_TOKEN_SECRET` and `UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET` are verification-only transition secrets for links issued before the versioned format.
 6. Configure Cloudflare rate limiting for subscription POSTs by source IP and enable Worker observability.
 7. Configure AWS SES account-level suppression for both hard bounces and complaints, plus a configuration set with delivery/bounce/complaint event destinations.
 
@@ -118,8 +119,7 @@ Deploy with:
 
 ```bash
 npm install
-npm run typecheck
-npm test
+npm run verify
 npx wrangler deploy
 ```
 

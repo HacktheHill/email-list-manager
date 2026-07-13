@@ -21,6 +21,8 @@
 		"EXPORT_TOKEN": "export-token",
 		"SUPPRESSION_READ_TOKEN": "suppression-token",
 		"UNSUBSCRIBE_TOKEN_SECRET": "unsubscribe-secret",
+		"UNSUBSCRIBE_TOKEN_ACTIVE_KEY_ID": "test-2026",
+		"UNSUBSCRIBE_TOKEN_KEYS": "{\"test-2026\":\"test-versioned-unsubscribe-secret-2026\"}",
 		"AWS_ACCESS_KEY_ID": "test-access-key",
 		"AWS_SECRET_ACCESS_KEY": "test-secret-key",
 		"AWS_REGION": "us-east-1",

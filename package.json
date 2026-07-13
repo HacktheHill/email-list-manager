@@ -6,17 +6,24 @@
 	"scripts": {
 		"dev": "wrangler dev",
 		"deploy": "wrangler deploy",
+		"deploy:dry-run": "wrangler deploy --dry-run",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"typecheck": "tsc --noEmit",
-		"cf-typegen": "wrangler types"
+		"lint": "eslint src test",
+		"cf-typegen": "wrangler types",
+		"audit:prod": "npm audit --omit=dev --audit-level=high",
+		"verify": "npm run lint && npm run typecheck && npm test && npx wrangler types --check && npm run deploy:dry-run && npm run audit:prod && npm audit --audit-level=high"
 	},
 	"dependencies": {
 		"aws4fetch": "^1.0.20"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.18.4",
+		"@eslint/js": "^10.0.1",
+		"eslint": "^10.7.0",
 		"typescript": "^5.5.2",
+		"typescript-eslint": "^8.63.0",
 		"vitest": "^4.1.10",
 		"wrangler": "^4.71.0"
 	}

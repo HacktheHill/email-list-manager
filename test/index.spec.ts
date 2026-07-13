@@ -2,6 +2,7 @@ import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const unsubscribeSecret = "unsubscribe-secret";
+const versionedUnsubscribeSecret = "test-versioned-unsubscribe-secret-2026";
 // Keep the test schema in lockstep with the checked-in migrations, including
 // the additive locale migration used by production.
 const migrations = [{
@@ -57,6 +58,21 @@ describe("email list subscription service", () => {
 			.bind("person@example.com")
 			.first<{ status: string }>();
 		expect(row?.status).toBe("unsubscribed");
+	});
+
+	it("accepts versioned unsubscribe tokens and rejects unknown key IDs", async () => {
+		const token = await createVersionedUnsubscribeToken("versioned@example.com");
+		const response = await SELF.fetch(`https://emails.hackthehill.com/unsubscribe?token=${token}`, {
+			method: "POST",
+		});
+		expect(response.status).toBe(200);
+		const row = await env.DB.prepare("SELECT status FROM subscribers WHERE email_normalized = ?")
+			.bind("versioned@example.com")
+			.first<{ status: string }>();
+		expect(row?.status).toBe("unsubscribed");
+
+		const unknownKey = token.replace("v1.test-2026.", "v1.unknown.");
+		expect((await SELF.fetch(`https://emails.hackthehill.com/unsubscribe?token=${unknownKey}`)).status).toBe(400);
 	});
 
 	it("accepts the browser confirmation form token in the POST body", async () => {
@@ -201,7 +217,7 @@ describe("email list subscription service", () => {
 			headers: { Authorization: "Bearer export-token" },
 		});
 		expect(response.status).toBe(200);
-		expect(await response.text()).toBe("email\r\nactive@example.com\r\n");
+		expect(await response.text()).toBe("email,language\r\nactive@example.com,en\r\n");
 	});
 
 	it("requires a POST after opening a confirmation link", async () => {
@@ -356,6 +372,13 @@ async function createUnsubscribeToken(email: string): Promise<string> {
 	const payload = encodeBase64Url(JSON.stringify({ email, iat: Date.now() }));
 	const signature = await hmacBase64Url(payload, unsubscribeSecret);
 	return `${payload}.${signature}`;
+}
+
+async function createVersionedUnsubscribeToken(email: string): Promise<string> {
+	const payload = encodeBase64Url(JSON.stringify({ email, iat: Date.now() }));
+	const signedValue = `v1.test-2026.${payload}`;
+	const signature = await hmacBase64Url(signedValue, versionedUnsubscribeSecret);
+	return `${signedValue}.${signature}`;
 }
 
 async function sha256Hex(value: string): Promise<string> {

@@ -5,6 +5,8 @@ const CONFIRMATION_RESEND_COOLDOWN_MS = 15 * 60 * 1000;
 const MAX_EMAIL_LENGTH = 254;
 const MAX_EXPORT_PAGE_SIZE = 1000;
 const MAX_REQUEST_BODY_BYTES = 16 * 1024;
+const MAX_SES_RESPONSE_BYTES = 16 * 1024;
+const SES_REQUEST_TIMEOUT_MS = 15_000;
 const WEBSITE_ORIGIN = "https://hackthehill.com";
 const PRIVACY_POLICY_URL = "https://cdn1.hackthehill.com/legal/privacy-policy.pdf";
 
@@ -55,6 +57,10 @@ export default {
 				path: url.pathname,
 				errorType: error instanceof Error ? error.name : "UnknownError",
 			});
+			if (wantsHtml(request)) {
+				const locale = resolveLocale(url.searchParams.get("lang"), request);
+				return htmlResponse(renderErrorPage(locale), 503, request, env, locale);
+			}
 			return jsonResponse({ ok: false, error: "Service temporarily unavailable" }, 503, request, env);
 		}
 	},
@@ -81,7 +87,7 @@ async function handleSubscribe(request: Request, env: Env, url: URL): Promise<Re
 	if (!email) {
 		logEvent("subscription", { outcome: "invalid_email" });
 		if (wantsHtml(request)) {
-			return htmlResponse(renderSubscribePage(null, locale, localeText(locale, "invalidEmail")), 400, request, env, locale);
+			return htmlResponse(renderSubscribePage(null, locale, invalidEmailText(locale)), 400, request, env, locale);
 		}
 		return jsonResponse({ ok: false, error: "A valid email address is required" }, 400, request, env);
 	}
@@ -267,17 +273,22 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 		logEvent("export", { outcome: "unauthorized" });
 		return textResponse("Unauthorized", 401, request, env);
 	}
-	const result = await env.DB.prepare("SELECT email_normalized FROM subscribers WHERE status = 'active' ORDER BY email_normalized ASC").all<{ email_normalized: string }>();
-	const emails = result.results.map(row => row.email_normalized);
+	const result = await env.DB.prepare(
+		"SELECT email_normalized, preferred_locale FROM subscribers WHERE status = 'active' ORDER BY email_normalized ASC",
+	).all<{ email_normalized: string; preferred_locale: string }>();
+	const subscribers = result.results.map(row => ({
+		email: row.email_normalized,
+		language: row.preferred_locale === "fr" ? "fr" : "en",
+	}));
 	const nowIso = new Date().toISOString();
 	await env.DB.prepare(
 		"INSERT INTO subscription_events (email_normalized, event_type, source, occurred_at, metadata_json) VALUES (?, 'csv_exported', 'bulk-email', ?, ?)",
 	)
-		.bind(null, nowIso, JSON.stringify({ rowCount: emails.length }))
+		.bind(null, nowIso, JSON.stringify({ rowCount: subscribers.length }))
 		.run()
 		.catch(() => undefined);
-	const csv = ["email", ...emails.map(escapeCsv)].join("\r\n") + "\r\n";
-	logEvent("export", { outcome: "completed", rowCount: emails.length });
+	const csv = ["email,language", ...subscribers.map(row => `${escapeCsv(row.email)},${row.language}`)].join("\r\n") + "\r\n";
+	logEvent("export", { outcome: "completed", rowCount: subscribers.length });
 	return response(csv, {
 		status: 200,
 		headers: {
@@ -334,9 +345,11 @@ async function sendConfirmationEmail(email: string, token: string, locale: Local
 	const text = `${copy.intro}\n\n${copy.cta}: ${url}\n\n${copy.expires} ${copy.ignore}\n\n${copy.contact}\ninfo@hackthehill.com\n0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada`;
 	const from = env.SES_FROM_NAME ? `${env.SES_FROM_NAME} <${env.SES_FROM_EMAIL}>` : env.SES_FROM_EMAIL;
 	const client = new AwsClient({ accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY, sessionToken: env.AWS_SESSION_TOKEN, region: env.AWS_REGION, service: "ses" });
+	const signal = AbortSignal.timeout(SES_REQUEST_TIMEOUT_MS);
 	const sesResponse = await client.fetch(`https://email.${env.AWS_REGION}.amazonaws.com/v2/email/outbound-emails`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
+		signal,
 		body: JSON.stringify({
 			FromEmailAddress: from,
 			ReplyToAddresses: ["info@hackthehill.com"],
@@ -345,26 +358,68 @@ async function sendConfirmationEmail(email: string, token: string, locale: Local
 			ConfigurationSetName: env.SES_CONFIGURATION_SET,
 		}),
 	});
-	if (!sesResponse.ok) throw new Error(`SES returned ${sesResponse.status}: ${(await sesResponse.text()).slice(0, 500)}`);
+	const responseBody = await readBoundedResponseBody(sesResponse, MAX_SES_RESPONSE_BYTES);
+	if (!sesResponse.ok) throw new Error(`SES returned ${sesResponse.status}: ${responseBody.slice(0, 500)}`);
 }
 
 async function verifyUnsubscribeToken(token: string, env: Env): Promise<UnsubscribePayload | null> {
 	if (token.length > 2048) return null;
+	const versioned = token.split(".");
+	if (versioned.length === 4 && versioned[0] === "v1") {
+		const [, keyId, payloadPart, signaturePart] = versioned;
+		if (!keyId || !payloadPart || !signaturePart) return null;
+		const keyring = parseUnsubscribeKeyring(env);
+		const secret = keyring.keys[keyId];
+		if (!secret) return null;
+		const signedValue = `v1.${keyId}.${payloadPart}`;
+		const expected = await hmacBase64Url(signedValue, secret);
+		if (!(await timingSafeStringEquals(expected, signaturePart))) return null;
+		return decodeUnsubscribePayload(payloadPart);
+	}
+
+	// Transitional verification for links issued before the versioned keyring rollout.
 	const [payloadPart, signaturePart, extraPart] = token.split(".");
 	if (!payloadPart || !signaturePart || extraPart) return null;
 	const secrets = [env.UNSUBSCRIBE_TOKEN_SECRET, env.UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET].filter((secret): secret is string => Boolean(secret));
 	for (const secret of secrets) {
 		const expected = await hmacBase64Url(payloadPart, secret);
 		if (!(await timingSafeStringEquals(expected, signaturePart))) continue;
-		try {
-			const parsed = JSON.parse(decodeBase64Url(payloadPart)) as { email?: unknown };
-			const email = normalizeEmail(parsed.email);
-			return email ? { email } : null;
-		} catch {
-			return null;
-		}
+		return decodeUnsubscribePayload(payloadPart);
 	}
 	return null;
+}
+
+function parseUnsubscribeKeyring(env: Env): { activeKeyId: string | null; keys: Record<string, string> } {
+	if (!env.UNSUBSCRIBE_TOKEN_KEYS) return { activeKeyId: null, keys: {} };
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(env.UNSUBSCRIBE_TOKEN_KEYS);
+	} catch {
+		throw new Error("UNSUBSCRIBE_TOKEN_KEYS must be valid JSON");
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("UNSUBSCRIBE_TOKEN_KEYS must be a JSON object");
+	}
+	const keys: Record<string, string> = {};
+	for (const [keyId, value] of Object.entries(parsed)) {
+		if (!/^[A-Za-z0-9_-]{1,32}$/.test(keyId) || typeof value !== "string" || value.length < 32) {
+			throw new Error("UNSUBSCRIBE_TOKEN_KEYS contains an invalid key");
+		}
+		keys[keyId] = value;
+	}
+	const activeKeyId = env.UNSUBSCRIBE_TOKEN_ACTIVE_KEY_ID ?? null;
+	if (activeKeyId && !keys[activeKeyId]) throw new Error("The active unsubscribe key ID is missing from the keyring");
+	return { activeKeyId, keys };
+}
+
+function decodeUnsubscribePayload(payloadPart: string): UnsubscribePayload | null {
+	try {
+		const parsed = JSON.parse(decodeBase64Url(payloadPart)) as { email?: unknown };
+		const email = normalizeEmail(parsed.email);
+		return email ? { email } : null;
+	} catch {
+		return null;
+	}
 }
 
 async function parseBody(request: Request): Promise<RequestBody> {
@@ -373,7 +428,7 @@ async function parseBody(request: Request): Promise<RequestBody> {
 	const body = await readBoundedBody(request, MAX_REQUEST_BODY_BYTES);
 	if (contentType === "application/json") {
 		const value = JSON.parse(new TextDecoder().decode(body)) as unknown;
-		return value && typeof value === "object" ? value as RequestBody : {};
+		return isRequestBody(value) ? value : {};
 	}
 	if (contentType === "application/x-www-form-urlencoded" || contentType === "multipart/form-data") {
 		const formRequest = new Request("https://body.invalid/", { method: "POST", headers: { "Content-Type": contentTypeHeader }, body });
@@ -381,6 +436,10 @@ async function parseBody(request: Request): Promise<RequestBody> {
 		return { email: form.get("email"), token: form.get("token"), lang: form.get("lang") };
 	}
 	return {};
+}
+
+function isRequestBody(value: unknown): value is RequestBody {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizeEmail(value: unknown): string | null {
@@ -464,6 +523,31 @@ async function readBoundedBody(request: Request, maxBytes: number): Promise<Uint
 	return result;
 }
 
+async function readBoundedResponseBody(response: Response, maxBytes: number): Promise<string> {
+	if (!response.body) return "";
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > maxBytes) throw new Error("SES response body exceeded the configured limit");
+			chunks.push(value);
+		}
+	} finally {
+		if (total > maxBytes) await reader.cancel().catch(() => undefined);
+	}
+	const body = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		body.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(body);
+}
+
 function originalEmail(value: unknown): string | null {
 	if (typeof value !== "string") return null;
 	const email = value.trim();
@@ -488,14 +572,14 @@ function resolveLocale(value: string | null | undefined, request: Request): Loca
 	return request.headers.get("accept-language")?.toLowerCase().split(",")[0]?.startsWith("fr") ? "fr" : "en";
 }
 
-function localeText(locale: Locale, key: "invalidEmail"): string {
+function invalidEmailText(locale: Locale): string {
 	return locale === "fr" ? "Veuillez saisir une adresse courriel valide." : "Please enter a valid email address.";
 }
 
 function renderLayout(title: string, body: string, locale: Locale, path: string, query: Record<string, string> = {}): string {
 	const languageLinks = Object.entries({ en: "EN", fr: "FR" }).map(([language, label]) => {
 		const params = new URLSearchParams({ ...query, lang: language });
-		return `<a class="language-link" href="${escapeHtml(`${path}?${params}`)}" aria-current="${language === locale}">${label}</a>`;
+		return `<a class="language-link" href="${escapeHtml(`${path}?${params.toString()}`)}" aria-current="${language === locale}">${label}</a>`;
 	}).join("");
 	const footer = locale === "fr"
 		? `<p>Hack the Hill est organisé par Capital Technology Network.</p><p><a href="mailto:info@hackthehill.com">info@hackthehill.com</a></p><p>0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada</p><p><a href="${PRIVACY_POLICY_URL}">Politique de confidentialité</a></p>`
