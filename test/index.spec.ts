@@ -201,7 +201,7 @@ describe("email list subscription service", () => {
 			headers: { Authorization: "Bearer export-token" },
 		});
 		expect(response.status).toBe(200);
-		expect(await response.text()).toBe("email\r\nactive@example.com\r\n");
+		expect(await response.text()).toBe("email,language\r\nactive@example.com,en\r\n");
 	});
 
 	it("requires a POST after opening a confirmation link", async () => {

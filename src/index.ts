@@ -267,17 +267,22 @@ async function exportCsv(request: Request, env: Env): Promise<Response> {
 		logEvent("export", { outcome: "unauthorized" });
 		return textResponse("Unauthorized", 401, request, env);
 	}
-	const result = await env.DB.prepare("SELECT email_normalized FROM subscribers WHERE status = 'active' ORDER BY email_normalized ASC").all<{ email_normalized: string }>();
-	const emails = result.results.map(row => row.email_normalized);
+	const result = await env.DB.prepare(
+		"SELECT email_normalized, preferred_locale FROM subscribers WHERE status = 'active' ORDER BY email_normalized ASC",
+	).all<{ email_normalized: string; preferred_locale: string }>();
+	const subscribers = result.results.map(row => ({
+		email: row.email_normalized,
+		language: row.preferred_locale === "fr" ? "fr" : "en",
+	}));
 	const nowIso = new Date().toISOString();
 	await env.DB.prepare(
 		"INSERT INTO subscription_events (email_normalized, event_type, source, occurred_at, metadata_json) VALUES (?, 'csv_exported', 'bulk-email', ?, ?)",
 	)
-		.bind(null, nowIso, JSON.stringify({ rowCount: emails.length }))
+		.bind(null, nowIso, JSON.stringify({ rowCount: subscribers.length }))
 		.run()
 		.catch(() => undefined);
-	const csv = ["email", ...emails.map(escapeCsv)].join("\r\n") + "\r\n";
-	logEvent("export", { outcome: "completed", rowCount: emails.length });
+	const csv = ["email,language", ...subscribers.map(row => `${escapeCsv(row.email)},${row.language}`)].join("\r\n") + "\r\n";
+	logEvent("export", { outcome: "completed", rowCount: subscribers.length });
 	return response(csv, {
 		status: 200,
 		headers: {

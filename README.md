@@ -47,7 +47,7 @@ curl \
   'https://emails.hackthehill.com/subscribe?export=csv'
 ```
 
-The response contains only confirmed active addresses and is marked `no-store`.
+The response contains only confirmed active addresses and their `en`/`fr` preferred language in `email,language` columns. It is marked `no-store`.
 
 The sender’s migration-compatible suppression endpoint is:
 
