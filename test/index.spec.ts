@@ -87,8 +87,9 @@ describe("email list subscription service", () => {
 	it("renders the branded English and French subscribe pages without consent controls", async () => {
 		const english = await SELF.fetch("https://emails.hackthehill.com/subscribe", { headers: { Accept: "text/html" } });
 		const englishHtml = await english.text();
-		expect(englishHtml).toContain("Stay in the loop");
+		expect(englishHtml).not.toContain("Stay in the loop");
 		expect(englishHtml).toContain("Get occasional Hack the Hill announcements, news, and opportunities by email.");
+		expect(englishHtml).toContain("We’ll send you a confirmation email. You can unsubscribe at any time.");
 		expect(englishHtml).toContain("https://hackthehill.com/Logos/hackthehill-banner.svg");
 		expect(englishHtml).toContain("/styles.css");
 		expect(englishHtml).not.toContain('type="checkbox"');
@@ -99,8 +100,9 @@ describe("email list subscription service", () => {
 			headers: { Accept: "text/html", "Accept-Language": "fr-CA,fr;q=0.9" },
 		});
 		const frenchHtml = await french.text();
-		expect(frenchHtml).toContain("Restez au courant");
+		expect(frenchHtml).not.toContain("Restez au courant");
 		expect(frenchHtml).toContain("Recevez occasionnellement par courriel les annonces, les nouvelles et les occasions de Hack the Hill.");
+		expect(frenchHtml).toContain("Nous vous enverrons un courriel de confirmation. Vous pouvez vous désabonner en tout temps.");
 		expect(french.headers.get("Content-Language")).toBe("fr");
 	});
 
