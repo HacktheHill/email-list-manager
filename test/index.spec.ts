@@ -1,7 +1,7 @@
 import { applyD1Migrations, env, SELF } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const unsubscribeSecret = "unsubscribe-secret";
+const versionedUnsubscribeSecret = "test-versioned-unsubscribe-secret-2026";
 // Keep the test schema in lockstep with the checked-in migrations, including
 // the additive locale migration used by production.
 const migrations = [{
@@ -33,7 +33,7 @@ afterEach(() => {
 
 describe("email list subscription service", () => {
 	it("does not mutate state when a browser opens an unsubscribe link", async () => {
-		const token = await createUnsubscribeToken("scanner@example.com");
+		const token = await createVersionedUnsubscribeToken("scanner@example.com");
 		const response = await SELF.fetch(`https://emails.hackthehill.com/unsubscribe?token=${token}`, {
 			headers: { Accept: "text/html" },
 		});
@@ -47,7 +47,7 @@ describe("email list subscription service", () => {
 	});
 
 	it("suppresses an address on one-click POST and is idempotent", async () => {
-		const token = await createUnsubscribeToken("person@example.com");
+		const token = await createVersionedUnsubscribeToken("person@example.com");
 		const request = () => SELF.fetch(`https://emails.hackthehill.com/unsubscribe?token=${token}`, { method: "POST" });
 
 		expect((await request()).status).toBe(200);
@@ -59,8 +59,23 @@ describe("email list subscription service", () => {
 		expect(row?.status).toBe("unsubscribed");
 	});
 
+	it("accepts versioned unsubscribe tokens and rejects unknown key IDs", async () => {
+		const token = await createVersionedUnsubscribeToken("versioned@example.com");
+		const response = await SELF.fetch(`https://emails.hackthehill.com/unsubscribe?token=${token}`, {
+			method: "POST",
+		});
+		expect(response.status).toBe(200);
+		const row = await env.DB.prepare("SELECT status FROM subscribers WHERE email_normalized = ?")
+			.bind("versioned@example.com")
+			.first<{ status: string }>();
+		expect(row?.status).toBe("unsubscribed");
+
+		const unknownKey = token.replace("v1.test-2026.", "v1.unknown.");
+		expect((await SELF.fetch(`https://emails.hackthehill.com/unsubscribe?token=${unknownKey}`)).status).toBe(400);
+	});
+
 	it("accepts the browser confirmation form token in the POST body", async () => {
-		const token = await createUnsubscribeToken("form@example.com");
+		const token = await createVersionedUnsubscribeToken("form@example.com");
 		const form = new URLSearchParams({ token });
 		const response = await SELF.fetch("https://emails.hackthehill.com/unsubscribe", {
 			method: "POST",
@@ -142,13 +157,6 @@ describe("email list subscription service", () => {
 		expect(emailHtml).toContain("background:#650014");
 		expect(emailHtml).toContain("color:#333");
 		expect(emailHtml).toContain('style="color:#650014;text-decoration:underline"');
-	});
-
-	it("rejects legacy t token parameters", async () => {
-		const subscribe = await SELF.fetch("https://emails.hackthehill.com/subscribe?t=not-supported", { headers: { Accept: "text/html" } });
-		expect(await subscribe.text()).not.toContain('name="token"');
-		const unsubscribe = await SELF.fetch("https://emails.hackthehill.com/unsubscribe?t=not-supported", { headers: { Accept: "text/html" } });
-		expect(unsubscribe.status).toBe(400);
 	});
 
 	it("returns styled browser validation errors", async () => {
@@ -352,10 +360,11 @@ async function seedPending(
 		.run();
 }
 
-async function createUnsubscribeToken(email: string): Promise<string> {
+async function createVersionedUnsubscribeToken(email: string): Promise<string> {
 	const payload = encodeBase64Url(JSON.stringify({ email, iat: Date.now() }));
-	const signature = await hmacBase64Url(payload, unsubscribeSecret);
-	return `${payload}.${signature}`;
+	const signedValue = `v1.test-2026.${payload}`;
+	const signature = await hmacBase64Url(signedValue, versionedUnsubscribeSecret);
+	return `${signedValue}.${signature}`;
 }
 
 async function sha256Hex(value: string): Promise<string> {

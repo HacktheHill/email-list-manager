@@ -73,7 +73,8 @@ The production Worker and D1 database are already deployed. The SES DNS records 
    ```bash
    npx wrangler secret put EXPORT_TOKEN
    npx wrangler secret put SUPPRESSION_READ_TOKEN
-   npx wrangler secret put UNSUBSCRIBE_TOKEN_SECRET
+   npx wrangler secret put UNSUBSCRIBE_TOKEN_ACTIVE_KEY_ID
+   npx wrangler secret put UNSUBSCRIBE_TOKEN_KEYS
    npx wrangler secret put AWS_ACCESS_KEY_ID
    npx wrangler secret put AWS_SECRET_ACCESS_KEY
    npx wrangler secret put AWS_REGION
@@ -84,7 +85,7 @@ The production Worker and D1 database are already deployed. The SES DNS records 
 
  `AWS_ACCESS_KEY_ID` should belong to an IAM principal restricted to sending from the Hack the Hill sender identity. Add `AWS_SESSION_TOKEN` only when using temporary credentials.
 
-5. Set `UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET` during signing-key rotation and remove it after all old messages have aged out.
+5. Store unsubscribe keys as a JSON object in `UNSUBSCRIBE_TOKEN_KEYS` and select the signing key with `UNSUBSCRIBE_TOKEN_ACTIVE_KEY_ID`.
 6. Configure Cloudflare rate limiting for subscription POSTs by source IP and enable Worker observability.
 7. Configure AWS SES account-level suppression for both hard bounces and complaints, plus a configuration set with delivery/bounce/complaint event destinations.
 
@@ -118,8 +119,7 @@ Deploy with:
 
 ```bash
 npm install
-npm run typecheck
-npm test
+npm run verify
 npx wrangler deploy
 ```
 
@@ -132,15 +132,5 @@ npm run dev
 ```
 
 The test Worker uses a local D1 database with the production schema (including the locale migration) and covers browser GET safety, one-click unsubscribe, confirmation, localized pages, authenticated export, and suppression pagination.
-
-## Migration
-
-Before production cutover:
-
-1. Export the existing Google Sheet.
-2. Import valid Sheet addresses as `active`.
-3. Update `bulk-email` to use the new export and canonical `token` unsubscribe URLs.
-
-Legacy suppressions from the previous system are intentionally not part of this list.
 
 Do not delete unsubscribed rows during routine maintenance. They are the suppression record that prevents stale imports from restoring consent.

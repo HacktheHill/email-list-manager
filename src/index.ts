@@ -355,21 +355,50 @@ async function sendConfirmationEmail(email: string, token: string, locale: Local
 
 async function verifyUnsubscribeToken(token: string, env: Env): Promise<UnsubscribePayload | null> {
 	if (token.length > 2048) return null;
-	const [payloadPart, signaturePart, extraPart] = token.split(".");
-	if (!payloadPart || !signaturePart || extraPart) return null;
-	const secrets = [env.UNSUBSCRIBE_TOKEN_SECRET, env.UNSUBSCRIBE_TOKEN_PREVIOUS_SECRET].filter((secret): secret is string => Boolean(secret));
-	for (const secret of secrets) {
-		const expected = await hmacBase64Url(payloadPart, secret);
-		if (!(await timingSafeStringEquals(expected, signaturePart))) continue;
-		try {
-			const parsed = JSON.parse(decodeBase64Url(payloadPart)) as { email?: unknown };
-			const email = normalizeEmail(parsed.email);
-			return email ? { email } : null;
-		} catch {
-			return null;
-		}
+	const versioned = token.split(".");
+	if (versioned.length !== 4 || versioned[0] !== "v1") return null;
+	const [, keyId, payloadPart, signaturePart] = versioned;
+	if (!keyId || !payloadPart || !signaturePart) return null;
+	const keyring = parseUnsubscribeKeyring(env);
+	const secret = keyring.keys[keyId];
+	if (!secret) return null;
+	const signedValue = `v1.${keyId}.${payloadPart}`;
+	const expected = await hmacBase64Url(signedValue, secret);
+	if (!(await timingSafeStringEquals(expected, signaturePart))) return null;
+	return decodeUnsubscribePayload(payloadPart);
+}
+
+function parseUnsubscribeKeyring(env: Env): { activeKeyId: string | null; keys: Record<string, string> } {
+	if (!env.UNSUBSCRIBE_TOKEN_KEYS) return { activeKeyId: null, keys: {} };
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(env.UNSUBSCRIBE_TOKEN_KEYS);
+	} catch {
+		throw new Error("UNSUBSCRIBE_TOKEN_KEYS must be valid JSON");
 	}
-	return null;
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("UNSUBSCRIBE_TOKEN_KEYS must be a JSON object");
+	}
+	const keys: Record<string, string> = {};
+	for (const [keyId, value] of Object.entries(parsed)) {
+		if (!/^[A-Za-z0-9_-]{1,32}$/.test(keyId) || typeof value !== "string" || value.length < 32) {
+			throw new Error("UNSUBSCRIBE_TOKEN_KEYS contains an invalid key");
+		}
+		keys[keyId] = value;
+	}
+	const activeKeyId = env.UNSUBSCRIBE_TOKEN_ACTIVE_KEY_ID ?? null;
+	if (activeKeyId && !keys[activeKeyId]) throw new Error("The active unsubscribe key ID is missing from the keyring");
+	return { activeKeyId, keys };
+}
+
+function decodeUnsubscribePayload(payloadPart: string): UnsubscribePayload | null {
+	try {
+		const parsed = JSON.parse(decodeBase64Url(payloadPart)) as { email?: unknown };
+		const email = normalizeEmail(parsed.email);
+		return email ? { email } : null;
+	} catch {
+		return null;
+	}
 }
 
 async function parseBody(request: Request): Promise<RequestBody> {
