@@ -91,6 +91,77 @@ describe("email list subscription service", () => {
 		expect(row?.status).toBe("unsubscribed");
 	});
 
+	it("offers a single-use immediate resubscribe action after a browser unsubscribe", async () => {
+		const unsubscribeToken = await createVersionedUnsubscribeToken("undo@example.com");
+		const unsubscribeResponse = await SELF.fetch(`https://emails.hackthehill.com/unsubscribe?token=${unsubscribeToken}`, {
+			method: "POST",
+			headers: { Accept: "text/html" },
+		});
+		const unsubscribeHtml = await unsubscribeResponse.text();
+		const resubscribeToken = /name="token" value="([^"]+)"/.exec(unsubscribeHtml)?.[1];
+
+		expect(unsubscribeResponse.status).toBe(200);
+		expect(resubscribeToken).toMatch(/^undo_/);
+		expect(unsubscribeHtml).toContain('method="post" action="/resubscribe"');
+		expect(unsubscribeHtml).not.toContain("/subscribe?lang=");
+
+		const getResponse = await SELF.fetch(`https://emails.hackthehill.com/resubscribe?token=${resubscribeToken}`, {
+			headers: { Accept: "text/html" },
+		});
+		expect(getResponse.status).toBe(405);
+		let row = await env.DB.prepare("SELECT status FROM subscribers WHERE email_normalized = ?")
+			.bind("undo@example.com")
+			.first<{ status: string }>();
+		expect(row?.status).toBe("unsubscribed");
+
+		const normalConfirmationResponse = await SELF.fetch("https://emails.hackthehill.com/subscribe", {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({ token: resubscribeToken! }),
+		});
+		expect(normalConfirmationResponse.status).toBe(400);
+
+		const response = await SELF.fetch("https://emails.hackthehill.com/resubscribe", {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "text/html" },
+			body: new URLSearchParams({ token: resubscribeToken!, lang: "en" }),
+		});
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("You’re subscribed again");
+		row = await env.DB.prepare("SELECT status, unsubscribed_at FROM subscribers WHERE email_normalized = ?")
+			.bind("undo@example.com")
+			.first<{ status: string; unsubscribed_at: string | null }>();
+		expect(row).toEqual({ status: "active", unsubscribed_at: null });
+
+		expect((await SELF.fetch("https://emails.hackthehill.com/resubscribe", {
+			method: "POST",
+			body: JSON.stringify({ token: resubscribeToken }),
+		})).status).toBe(400);
+		const event = await env.DB.prepare("SELECT event_type, source FROM subscription_events WHERE email_normalized = ? ORDER BY id DESC LIMIT 1")
+			.bind("undo@example.com")
+			.first<{ event_type: string; source: string }>();
+		expect(event).toEqual({ event_type: "resubscribe_confirmed", source: "web_undo" });
+	});
+
+	it("rejects an expired immediate resubscribe action", async () => {
+		const token = "undo_expired-token";
+		await seedPending("expired-undo@example.com", await sha256Hex(token), new Date().toISOString(), "unsubscribed");
+		await env.DB.prepare("UPDATE subscribers SET confirmation_expires_at = ? WHERE email_normalized = ?")
+			.bind(new Date(0).toISOString(), "expired-undo@example.com")
+			.run();
+
+		const response = await SELF.fetch("https://emails.hackthehill.com/resubscribe", {
+			method: "POST",
+			body: new URLSearchParams({ token }),
+		});
+
+		expect(response.status).toBe(400);
+		const row = await env.DB.prepare("SELECT status FROM subscribers WHERE email_normalized = ?")
+			.bind("expired-undo@example.com")
+			.first<{ status: string }>();
+		expect(row?.status).toBe("unsubscribed");
+	});
+
 	it("accepts a browser subscribe form without a consent checkbox", async () => {
 		await seedSubscriber("member@example.com", "active");
 		const response = await SELF.fetch("https://emails.hackthehill.com/subscribe", {

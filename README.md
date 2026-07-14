@@ -21,6 +21,8 @@ The POST body can be JSON or form data:
 
 The service uses double opt-in. The address is not exported until the confirmation link has been opened and submitted. `lang` may be `en` or `fr` and is retained for confirmation messages and result pages.
 
+After a browser unsubscribe succeeds, the result page offers an immediate “Subscribe again now” POST action. It uses a single-use capability that expires after 15 minutes and does not require another email confirmation. Entering an unsubscribed address through the normal subscribe form still uses double opt-in.
+
 To confirm a request, POST the token from the confirmation URL:
 
 ```json
@@ -35,6 +37,14 @@ POST https://emails.hackthehill.com/unsubscribe?token=...
 ```
 
 `POST` also accepts the RFC 8058 `List-Unsubscribe=One-Click` request. `token` is the only supported signed-token parameter.
+
+### Immediate resubscribe
+
+```text
+POST https://emails.hackthehill.com/resubscribe
+```
+
+This endpoint only accepts the short-lived token from the successful browser unsubscribe page. `GET` requests never change state, and the token cannot be used with the normal subscription confirmation endpoint.
 
 ### Authenticated CSV export
 

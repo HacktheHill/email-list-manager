@@ -2,6 +2,8 @@ import { AwsClient } from "aws4fetch";
 
 const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
 const CONFIRMATION_RESEND_COOLDOWN_MS = 15 * 60 * 1000;
+const RESUBSCRIBE_TTL_MS = 15 * 60 * 1000;
+const RESUBSCRIBE_TOKEN_PREFIX = "undo_";
 const MAX_EMAIL_LENGTH = 254;
 const MAX_EXPORT_PAGE_SIZE = 1000;
 const MAX_REQUEST_BODY_BYTES = 16 * 1024;
@@ -38,12 +40,13 @@ export default {
 			return response(null, { status: 204, headers: { Allow: "GET, POST, OPTIONS" } }, request, env);
 		}
 
-		if (url.pathname !== "/subscribe" && url.pathname !== "/unsubscribe") {
+		if (url.pathname !== "/subscribe" && url.pathname !== "/unsubscribe" && url.pathname !== "/resubscribe") {
 			return textResponse("Not Found", 404, request, env);
 		}
 
 		try {
 			if (url.pathname === "/subscribe") return await handleSubscribe(request, env, url);
+			if (url.pathname === "/resubscribe") return await handleResubscribe(request, env, url);
 			return await handleUnsubscribe(request, env, url);
 		} catch (error) {
 			if (error instanceof RequestBodyTooLargeError) {
@@ -77,6 +80,7 @@ async function handleSubscribe(request: Request, env: Env, url: URL): Promise<Re
 	const body = await parseBody(request);
 	const locale = resolveLocale(firstString(body.lang) ?? url.searchParams.get("lang"), request);
 	const token = firstString(body.token) ?? url.searchParams.get("token");
+	if (token?.startsWith(RESUBSCRIBE_TOKEN_PREFIX)) return invalidConfirmationResponse(request, env, locale);
 	if (token) return confirmSubscription(token, request, env, locale);
 
 	const email = normalizeEmail(body.email);
@@ -89,6 +93,38 @@ async function handleSubscribe(request: Request, env: Env, url: URL): Promise<Re
 	}
 
 	return requestSubscription(email, originalEmail(body.email) ?? email, locale, request, env);
+}
+
+async function handleResubscribe(request: Request, env: Env, url: URL): Promise<Response> {
+	if (request.method !== "POST") return methodNotAllowed("POST, OPTIONS", request, env);
+
+	const body = await parseBody(request);
+	const locale = resolveLocale(firstString(body.lang) ?? url.searchParams.get("lang"), request);
+	const token = firstString(body.token);
+	if (!token || token.length > 512 || !token.startsWith(RESUBSCRIBE_TOKEN_PREFIX)) {
+		return invalidResubscribeResponse(request, env, locale);
+	}
+
+	const nowIso = new Date().toISOString();
+	const tokenHash = await sha256Hex(token);
+	const activated = await env.DB.prepare(
+		"UPDATE subscribers SET status = 'active', confirmed_at = ?, unsubscribed_at = NULL, confirmation_token_hash = NULL, confirmation_expires_at = NULL, confirmation_sent_at = NULL, updated_at = ? WHERE confirmation_token_hash = ? AND status = 'unsubscribed' AND confirmation_expires_at > ? RETURNING email_normalized, preferred_locale",
+	)
+		.bind(nowIso, nowIso, tokenHash, nowIso)
+		.first<{ email_normalized: string; preferred_locale: Locale }>();
+
+	if (!activated) return invalidResubscribeResponse(request, env, locale);
+
+	await env.DB.prepare(
+		"INSERT INTO subscription_events (email_normalized, event_type, source, occurred_at, consent_text_version) VALUES (?, 'resubscribe_confirmed', 'web_undo', ?, ?)",
+	)
+		.bind(activated.email_normalized, nowIso, env.CONSENT_TEXT_VERSION)
+		.run();
+	logEvent("resubscription", { outcome: "activated" });
+
+	const responseLocale = activated.preferred_locale;
+	if (wantsHtml(request)) return htmlResponse(renderResubscribeResult(responseLocale), 200, request, env, responseLocale);
+	return jsonResponse({ ok: true, status: "active" }, 200, request, env);
 }
 
 async function handleUnsubscribe(request: Request, env: Env, url: URL): Promise<Response> {
@@ -124,9 +160,9 @@ async function handleUnsubscribe(request: Request, env: Env, url: URL): Promise<
 		return textResponse("Invalid token", 400, request, env);
 	}
 
-	await recordUnsubscribe(payload.email, env);
+	const resubscribeToken = await recordUnsubscribe(payload.email, env);
 	logEvent("unsubscribe", { outcome: "recorded" });
-	return unsubscribeResponse(request, env, locale);
+	return unsubscribeResponse(request, env, locale, resubscribeToken);
 }
 
 async function requestSubscription(email: string, emailOriginal: string, locale: Locale, request: Request, env: Env): Promise<Response> {
@@ -240,28 +276,38 @@ function invalidConfirmationResponse(request: Request, env: Env, locale: Locale)
 	return textResponse("Invalid or expired confirmation link", 400, request, env);
 }
 
-async function recordUnsubscribe(email: string, env: Env): Promise<void> {
+function invalidResubscribeResponse(request: Request, env: Env, locale: Locale): Response {
+	logEvent("resubscription", { outcome: "invalid_token" });
+	if (wantsHtml(request)) return htmlResponse(renderInvalidResubscribe(locale), 400, request, env, locale);
+	return textResponse("Invalid or expired resubscribe action", 400, request, env);
+}
+
+async function recordUnsubscribe(email: string, env: Env): Promise<string> {
 	const nowIso = new Date().toISOString();
+	const resubscribeToken = `${RESUBSCRIBE_TOKEN_PREFIX}${randomToken()}`;
+	const resubscribeTokenHash = await sha256Hex(resubscribeToken);
+	const resubscribeExpiresAt = new Date(Date.now() + RESUBSCRIBE_TTL_MS).toISOString();
 	await env.DB.batch([
 		env.DB.prepare(
 			`INSERT INTO subscribers (
 				email_normalized, email_original, status, source, consent_text_version, preferred_locale,
 				requested_at, confirmed_at, unsubscribed_at, confirmation_sent_at,
 				updated_at, confirmation_token_hash, confirmation_expires_at
-			) VALUES (?, ?, 'unsubscribed', 'unsubscribe_link', ?, 'en', NULL, NULL, ?, NULL, ?, NULL, NULL)
+			) VALUES (?, ?, 'unsubscribed', 'unsubscribe_link', ?, 'en', NULL, NULL, ?, NULL, ?, ?, ?)
 			ON CONFLICT(email_normalized) DO UPDATE SET
 				status = 'unsubscribed',
 				unsubscribed_at = excluded.unsubscribed_at,
-				confirmation_token_hash = NULL,
-				confirmation_expires_at = NULL,
+				confirmation_token_hash = excluded.confirmation_token_hash,
+				confirmation_expires_at = excluded.confirmation_expires_at,
 				confirmation_sent_at = NULL,
 				updated_at = excluded.updated_at`,
 		)
-			.bind(email, email, env.CONSENT_TEXT_VERSION, nowIso, nowIso),
+			.bind(email, email, env.CONSENT_TEXT_VERSION, nowIso, nowIso, resubscribeTokenHash, resubscribeExpiresAt),
 		env.DB.prepare(
 			"INSERT INTO subscription_events (email_normalized, event_type, source, occurred_at, consent_text_version) VALUES (?, 'unsubscribe_requested', 'unsubscribe_link', ?, ?)",
 		).bind(email, nowIso, env.CONSENT_TEXT_VERSION),
 	]);
+	return resubscribeToken;
 }
 
 async function exportCsv(request: Request, env: Env): Promise<Response> {
@@ -606,12 +652,27 @@ function acceptedSubscriptionResponse(request: Request, env: Env, locale: Locale
 	return jsonResponse({ ok: true, status: "accepted" }, 202, request, env);
 }
 
-function unsubscribeResponse(request: Request, env: Env, locale: Locale): Response {
+function unsubscribeResponse(request: Request, env: Env, locale: Locale, resubscribeToken: string): Response {
 	if (wantsHtml(request)) {
-		const copy = locale === "fr" ? { title: "Vous êtes désabonné", text: "Vous ne recevrez plus les mises à jour par courriel de Hack the Hill.", link: "S’abonner à nouveau" } : { title: "You’re unsubscribed", text: "You won’t receive future Hack the Hill email updates.", link: "Subscribe again" };
-		return htmlResponse(renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p><p class="action-row"><a class="button" href="/subscribe?lang=${locale}">${copy.link}</a></p>`, locale, "/unsubscribe"), 200, request, env, locale);
+		const copy = locale === "fr" ? { title: "Vous êtes désabonné", text: "Vous ne recevrez plus les mises à jour par courriel de Hack the Hill.", link: "Se réabonner maintenant" } : { title: "You’re unsubscribed", text: "You won’t receive future Hack the Hill email updates.", link: "Subscribe again now" };
+		const form = `<form class="form" method="post" action="/resubscribe"><input type="hidden" name="token" value="${escapeHtml(resubscribeToken)}"><input type="hidden" name="lang" value="${locale}"><button class="button" type="submit">${copy.link}</button></form>`;
+		return htmlResponse(renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p>${form}`, locale, "/unsubscribe"), 200, request, env, locale);
 	}
 	return textResponse("ok", 200, request, env);
+}
+
+function renderResubscribeResult(locale: Locale): string {
+	const copy = locale === "fr"
+		? { title: "Votre abonnement est rétabli", text: "Vous recevrez maintenant les mises à jour par courriel de Hack the Hill.", link: "Visiter hackthehill.com" }
+		: { title: "You’re subscribed again", text: "You’ll now receive occasional email updates from Hack the Hill.", link: "Visit hackthehill.com" };
+	return renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p><p class="action-row"><a class="button" href="${WEBSITE_ORIGIN}">${copy.link}</a></p>`, locale, "/subscribe");
+}
+
+function renderInvalidResubscribe(locale: Locale): string {
+	const copy = locale === "fr"
+		? { title: "Action de réabonnement invalide", text: "Cette action de réabonnement est invalide ou a expiré.", link: "S’abonner aux mises à jour" }
+		: { title: "Invalid resubscribe action", text: "This resubscribe action is invalid or has expired.", link: "Subscribe to updates" };
+	return renderLayout(copy.title, `<h1>${copy.title}</h1><p class="lede">${copy.text}</p><p class="action-row"><a class="button" href="/subscribe?lang=${locale}">${copy.link}</a></p>`, locale, "/subscribe");
 }
 
 function renderErrorPage(locale: Locale): string {
