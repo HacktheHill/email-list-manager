@@ -60,6 +60,10 @@ export default {
 				path: url.pathname,
 				errorType: error instanceof Error ? error.name : "UnknownError",
 			});
+			if (wantsHtml(request)) {
+				const locale = resolveLocale(url.searchParams.get("lang"), request);
+				return htmlResponse(renderErrorPage(locale), 503, request, env, locale);
+			}
 			return jsonResponse({ ok: false, error: "Service temporarily unavailable" }, 503, request, env);
 		}
 	},
@@ -87,7 +91,7 @@ async function handleSubscribe(request: Request, env: Env, url: URL): Promise<Re
 	if (!email) {
 		logEvent("subscription", { outcome: "invalid_email" });
 		if (wantsHtml(request)) {
-			return htmlResponse(renderSubscribePage(null, locale, localeText(locale, "invalidEmail")), 400, request, env, locale);
+			return htmlResponse(renderSubscribePage(null, locale, invalidEmailText(locale)), 400, request, env, locale);
 		}
 		return jsonResponse({ ok: false, error: "A valid email address is required" }, 400, request, env);
 	}
@@ -407,16 +411,18 @@ async function sendConfirmationEmail(email: string, token: string, locale: Local
 async function verifyUnsubscribeToken(token: string, env: Env): Promise<UnsubscribePayload | null> {
 	if (token.length > 2048) return null;
 	const versioned = token.split(".");
-	if (versioned.length !== 4 || versioned[0] !== "v1") return null;
-	const [, keyId, payloadPart, signaturePart] = versioned;
-	if (!keyId || !payloadPart || !signaturePart) return null;
-	const keyring = parseUnsubscribeKeyring(env);
-	const secret = keyring.keys[keyId];
-	if (!secret) return null;
-	const signedValue = `v1.${keyId}.${payloadPart}`;
-	const expected = await hmacBase64Url(signedValue, secret);
-	if (!(await timingSafeStringEquals(expected, signaturePart))) return null;
-	return decodeUnsubscribePayload(payloadPart);
+	if (versioned.length === 4 && versioned[0] === "v1") {
+		const [, keyId, payloadPart, signaturePart] = versioned;
+		if (!keyId || !payloadPart || !signaturePart) return null;
+		const keyring = parseUnsubscribeKeyring(env);
+		const secret = keyring.keys[keyId];
+		if (!secret) return null;
+		const signedValue = `v1.${keyId}.${payloadPart}`;
+		const expected = await hmacBase64Url(signedValue, secret);
+		if (!(await timingSafeStringEquals(expected, signaturePart))) return null;
+		return decodeUnsubscribePayload(payloadPart);
+	}
+	return null;
 }
 
 function parseUnsubscribeKeyring(env: Env): { activeKeyId: string | null; keys: Record<string, string> } {
@@ -458,7 +464,7 @@ async function parseBody(request: Request): Promise<RequestBody> {
 	const body = await readBoundedBody(request, MAX_REQUEST_BODY_BYTES);
 	if (contentType === "application/json") {
 		const value = JSON.parse(new TextDecoder().decode(body)) as unknown;
-		return value && typeof value === "object" ? value as RequestBody : {};
+		return isRequestBody(value) ? value : {};
 	}
 	if (contentType === "application/x-www-form-urlencoded" || contentType === "multipart/form-data") {
 		const formRequest = new Request("https://body.invalid/", { method: "POST", headers: { "Content-Type": contentTypeHeader }, body });
@@ -466,6 +472,10 @@ async function parseBody(request: Request): Promise<RequestBody> {
 		return { email: form.get("email"), token: form.get("token"), lang: form.get("lang") };
 	}
 	return {};
+}
+
+function isRequestBody(value: unknown): value is RequestBody {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function normalizeEmail(value: unknown): string | null {
@@ -598,14 +608,14 @@ function resolveLocale(value: string | null | undefined, request: Request): Loca
 	return request.headers.get("accept-language")?.toLowerCase().split(",")[0]?.startsWith("fr") ? "fr" : "en";
 }
 
-function localeText(locale: Locale, key: "invalidEmail"): string {
+function invalidEmailText(locale: Locale): string {
 	return locale === "fr" ? "Veuillez saisir une adresse courriel valide." : "Please enter a valid email address.";
 }
 
 function renderLayout(title: string, body: string, locale: Locale, path: string, query: Record<string, string> = {}): string {
 	const languageLinks = Object.entries({ en: "EN", fr: "FR" }).map(([language, label]) => {
 		const params = new URLSearchParams({ ...query, lang: language });
-		return `<a class="language-link" href="${escapeHtml(`${path}?${params}`)}" aria-current="${language === locale}">${label}</a>`;
+		return `<a class="language-link" href="${escapeHtml(`${path}?${params.toString()}`)}" aria-current="${language === locale}">${label}</a>`;
 	}).join("");
 	const footer = locale === "fr"
 		? `<p>Hack the Hill est organisé par Capital Technology Network.</p><p><a href="mailto:info@hackthehill.com">info@hackthehill.com</a></p><p>0109-800 King Edward Avenue, Ottawa, ON K1N 6N5, Canada</p><p><a href="${PRIVACY_POLICY_URL}">Politique de confidentialité</a></p>`
@@ -622,7 +632,7 @@ function renderSubscribePage(token: string | null, locale: Locale, error = "", e
 		? { title: "Mises à jour de Hack the Hill", description: "Recevez occasionnellement par courriel les annonces, les nouvelles et les occasions de Hack the Hill.", label: "Adresse courriel", note: "Nous vous enverrons un courriel de confirmation. Vous pouvez vous désabonner en tout temps.", button: "S’abonner aux mises à jour" }
 		: { title: "Hack the Hill email updates", description: "Get occasional Hack the Hill announcements, news, and opportunities by email.", label: "Email address", note: "We’ll send you a confirmation email. You can unsubscribe at any time.", button: "Subscribe to updates" };
 	const errorHtml = error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : "";
-	return renderLayout(text.title, `<h1 class="sr-only">${text.title}</h1><p class="lede subscribe-intro">${text.description}</p>${errorHtml}<form class="form" method="post" action="/subscribe"><label class="label" for="email">${text.label}</label><input class="input" id="email" name="email" type="email" inputmode="email" autocomplete="email" required maxlength="254" value="${escapeHtml(email)}"><p class="notice">${text.note}</p><input type="hidden" name="lang" value="${locale}"><button class="button" type="submit">${text.button}</button></form>`, locale, "/subscribe");
+	return renderLayout(text.title, `<h1 class="sr-only">${text.title}</h1><p class="lede subscribe-intro">${text.description}</p>${errorHtml}<form class="form" method="post" action="/subscribe"><input class="input" id="email" name="email" type="email" inputmode="email" autocomplete="email" aria-label="${escapeHtml(text.label)}" placeholder="${escapeHtml(text.label)}" required maxlength="254" value="${escapeHtml(email)}"><p class="notice">${text.note}</p><input type="hidden" name="lang" value="${locale}"><button class="button" type="submit">${text.button}</button></form>`, locale, "/subscribe");
 }
 
 function renderConfirmationResult(locale: Locale): string {

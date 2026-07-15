@@ -180,6 +180,8 @@ describe("email list subscription service", () => {
 		expect(englishHtml).not.toContain("Stay in the loop");
 		expect(englishHtml).toContain("Get occasional Hack the Hill announcements, news, and opportunities by email.");
 		expect(englishHtml).toContain("We’ll send you a confirmation email. You can unsubscribe at any time.");
+		expect(englishHtml).toContain('aria-label="Email address" placeholder="Email address"');
+		expect(englishHtml).not.toContain('<label class="label" for="email">');
 		expect(englishHtml).toContain("https://hackthehill.com/Logos/hackthehill-banner.svg");
 		expect(englishHtml).toContain('class="brand-header"');
 		expect(englishHtml.indexOf('class="brand-header"')).toBeLessThan(englishHtml.indexOf('<main class="card">'));
@@ -196,6 +198,7 @@ describe("email list subscription service", () => {
 		expect(frenchHtml).not.toContain("Restez au courant");
 		expect(frenchHtml).toContain("Recevez occasionnellement par courriel les annonces, les nouvelles et les occasions de Hack the Hill.");
 		expect(frenchHtml).toContain("Nous vous enverrons un courriel de confirmation. Vous pouvez vous désabonner en tout temps.");
+		expect(frenchHtml).toContain('aria-label="Adresse courriel" placeholder="Adresse courriel"');
 		expect(french.headers.get("Content-Language")).toBe("fr");
 	});
 
