@@ -19,13 +19,13 @@
 		"aws4fetch": "^1.0.20"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.22.0",
+		"@cloudflare/vitest-pool-workers": "^0.23.0",
 		"@eslint/js": "^10.0.1",
-		"eslint": "^10.11.0",
+		"eslint": "^10.12.0",
 		"typescript": "^5.5.2",
-		"typescript-eslint": "^8.70.1",
-		"vitest": "^4.1.11",
-		"wrangler": "^4.137.0"
+		"typescript-eslint": "^8.71.2",
+		"vitest": "^5.0.4",
+		"wrangler": "^4.151.0"
 	},
 	"overrides": {
 		"@cloudflare/vitest-pool-workers": {
